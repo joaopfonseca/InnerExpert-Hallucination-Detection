@@ -38,7 +38,7 @@ def get_attentions(outputs, layer_idx=None, head_idx=None):
         (batch_size, sequence_length, sequence_length)
         (batch_size, num_layers, num_heads, sequence_length, sequence_length)
     """
-    attentions = outputs.attentions
+    attentions = outputs["attentions"]
     if attentions is None:
         raise ValueError(
             "Attentions are not available in the model outputs. Ensure that "
@@ -116,28 +116,41 @@ def attention_score(attentions):
     return score
 
 
-def generate_params(inputs, tokenizer, **kwargs):
+def generate_params(
+    inputs, 
+    tokenizer, 
+    output_attentions=True,
+    output_hidden_states=True,
+    output_scores=True,
+    output_router_logits=True,
+    **kwargs
+):
     return {
         **inputs,
         "attention_mask":inputs["attention_mask"],
         # "top_p":0.9,
         # "do_sample":True,
-        "pad_token_id":tokenizer.eos_token_id,
-        "return_dict_in_generate":True,
-        "output_attentions":True,
-        "output_hidden_states":True,
-        "output_scores":True,
-        "use_cache":True,
+        "pad_token_id": tokenizer.eos_token_id,
+        "return_dict_in_generate": True,
+        "output_attentions": output_attentions,
+        "output_hidden_states": output_hidden_states,
+        "output_scores": output_scores,
+        "output_router_logits": output_router_logits,
+        "use_cache": True,
         **kwargs
     }
 
 def _unpack_input_outputs(outputs):
     """Get the logits, hidden states, and attentions for the last token in the input sequence."""
-    outputs_sliced = {
-        "logits": [outputs["logits"][0][:, -1]],
-        "hidden_states": [[layer[:, -1, :] for layer in outputs["hidden_states"][0]]],
-        "attentions": outputs["attentions"],
-    }
+    outputs_sliced = {}
+    if "logits" in outputs:
+        outputs_sliced["logits"] = [outputs["logits"][0][:, -1]]
+    if "hidden_states" in outputs:
+        outputs_sliced["hidden_states"] = [[layer[:, -1, :] for layer in outputs["hidden_states"][0]]]
+    if "attentions" in outputs:
+        outputs_sliced["attentions"] = outputs["attentions"]
+    if "router_logits" in outputs:
+        outputs_sliced["router_logits"] = [[layer[-1] for layer in outputs["router_logits"][0]]]
     return {**outputs_sliced, **{k: v for k, v in outputs.items() if k not in outputs_sliced}}
 
 

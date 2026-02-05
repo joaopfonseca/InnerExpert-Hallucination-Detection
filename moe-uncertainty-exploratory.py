@@ -23,18 +23,21 @@ inputs = tokenizer.apply_chat_template(
 	return_tensors="pt",
 ).to(model.device)
 
-gen_params = generate_params(inputs, tokenizer, max_new_tokens=60)
-outputs = model.generate(**gen_params, top_k=1)
+# NOTE: output_router_logits must be False for `generate`; This is a known limitation.
+# See: https://github.com/huggingface/transformers/issues/30731
+gen_params = generate_params(inputs, tokenizer, max_new_tokens=60, output_router_logits=False)
+outputs = model.generate(**gen_params)
 
 print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 
 # This is the same as outputs, but with the hidden states reconstructed exactly as they occurred 
 # during autoregressive generation.
+gen_params_rec = generate_params(inputs, tokenizer, max_new_tokens=60)
 outputs_rec = reconstruct_model_output(
     model, 
     input_ids=inputs["input_ids"], 
     output_ids=outputs.sequences,
-    **{k: v for k, v in gen_params.items() if k not in ["input_ids", "max_new_tokens"]}
+    **{k: v for k, v in gen_params_rec.items() if k not in ["input_ids", "max_new_tokens"]}
 )
 
 # Verify that the reconstructed sequence matches the original generated sequence
