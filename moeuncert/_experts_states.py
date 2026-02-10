@@ -5,6 +5,7 @@ from transformers import AutoModelForCausalLM
 # model = AutoModelForCausalLM.from_pretrained("mistralai/Mixtral-8x7B-Instruct", torch_dtype=torch.float16, device_map="auto")
 # moe_layer = model.model.layers.block_sparse_moe  # adjust path to the MoE block you want
 
+
 def modify_moe_block(moe_block):
     """
     Monkey-patch the forward method of the given MoE block to save intermediate
@@ -18,11 +19,10 @@ def modify_moe_block(moe_block):
 
     class MoECustom(type(moe_block)):
         pass
-    
+
     MoECustom.forward = forward_olmoe
     moe_block.__class__ = MoECustom
     return moe_block
-
 
 
 def forward_olmoe(self, hidden_states, *args, **kwargs):
@@ -39,8 +39,8 @@ def forward_olmoe(self, hidden_states, *args, **kwargs):
 
     # This replaces the self.experts call in the original forward
     # final_hidden_states = self.experts(
-    #         hidden_states, 
-    #         top_k_index, 
+    #         hidden_states,
+    #         top_k_index,
     #         top_k_weights
     # ).reshape(batch_size, sequence_length, hidden_dim)
 
@@ -61,18 +61,24 @@ def forward_olmoe(self, hidden_states, *args, **kwargs):
             continue
         top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
         current_state = hidden_states[token_idx]
-        gate, up = nn.functional.linear(current_state, self.experts.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+        gate, up = nn.functional.linear(
+            current_state, self.experts.gate_up_proj[expert_idx]
+        ).chunk(2, dim=-1)
         current_hidden_states = self.experts.act_fn(gate) * up
-        current_hidden_states = nn.functional.linear(current_hidden_states, self.experts.down_proj[expert_idx])
+        current_hidden_states = nn.functional.linear(
+            current_hidden_states, self.experts.down_proj[expert_idx]
+        )
 
         # MODIFIED: Save the intermediate hidden states for this expert
         experts_hidden[int(expert_idx)] = current_hidden_states.detach().cpu()
 
-        current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
-        final_hidden_states.index_add_(
-                0, token_idx, current_hidden_states.to(final_hidden_states.dtype)
+        current_hidden_states = (
+            current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
         )
-    
+        final_hidden_states.index_add_(
+            0, token_idx, current_hidden_states.to(final_hidden_states.dtype)
+        )
+
     final_hidden_states = final_hidden_states.reshape(
         batch_size, sequence_length, hidden_dim
     )
