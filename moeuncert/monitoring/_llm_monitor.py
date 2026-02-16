@@ -1,5 +1,5 @@
 from ._generation_reconstruction import reconstruct_model_output
-from ._experts_states import modify_model
+from ..forwards import modify_model, reset_model
 
 
 class MoEMonitor:
@@ -45,17 +45,41 @@ class MoEMonitor:
         output_ids,
         **model_kwargs,
     ):
-        return reconstruct_model_output(
-            self.model, input_ids, output_ids, **self._monitor_kwargs(), **model_kwargs
+        if self.output_experts_hidden:
+            modify_model(self.model)
+
+        forward_kwargs = self._monitor_kwargs()
+        forward_kwargs.update(model_kwargs)
+
+        output = reconstruct_model_output(
+            self.model, input_ids, output_ids, **forward_kwargs
         )
+
+        if self.output_experts_hidden:
+            reset_model(self.model)
+
+        return output
 
     def generate(self, input_ids, **model_kwargs):
         raise NotImplementedError
 
     def forward(
         self,
+        *args,
+        **kwargs,
     ):
-        raise NotImplementedError
+        if self.output_experts_hidden:
+            modify_model(self.model)
+
+        forward_kwargs = self._monitor_kwargs()
+        forward_kwargs.update(kwargs)
+
+        output = self.model.forward(*args, **forward_kwargs)
+
+        if self.output_experts_hidden:
+            reset_model(self.model)
+
+        return output
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
