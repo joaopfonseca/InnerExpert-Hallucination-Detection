@@ -1,5 +1,5 @@
-from ._generation_reconstruction import reconstruct_model_output
-from ._metrics import hidden_score, attention_score
+from .monitoring import reconstruct_model_output
+from .metrics import hidden_score, attention_score
 from .utils import (
     llm_description,
     generate_params,
