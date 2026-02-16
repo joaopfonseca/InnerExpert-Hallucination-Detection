@@ -1,5 +1,6 @@
 from . import (
     forwards,
+    datasets,
     metrics,
     monitoring,
     utils,
@@ -7,6 +8,7 @@ from . import (
 
 __all__ = [
     "forwards",
+    "datasets",
     "metrics",
     "monitoring",
     "utils",
