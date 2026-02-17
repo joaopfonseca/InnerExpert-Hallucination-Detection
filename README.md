@@ -2,13 +2,26 @@
 ## TODOs
 
 - [ ] Add datasets
-    - [x] TruthfulQA (uncertainty estimation / hallucination detection)
-    - ?
+    - [x] **TruthfulQA** (contains best answer, correct answers, and incorrect answers for each question)
+    - [x] [NQ-Open](https://huggingface.co/datasets/google-research-datasets/nq_open) (question-answer pairs only)
+    - [x] [SQuAD](https://huggingface.co/datasets/rajpurkar/squad) (very similar to NQ-Open)
+    - [x] [FreshQA](https://github.com/freshllms/freshqa/tree/main) (also contains a method for evaluating the correctness of the answer, which is not just based on keyword matching)
+    - [x] **[RealtimeQA](https://github.com/realtimeqa/realtimeqa_public)** (contains question-answer pairs, the questions are based on current events, therefore the answers are more likely to be hallucinated if no evidence is provided - could be a good dataset for a case study)
+    - [x] [XSum](https://huggingface.co/datasets/EdinburghNLP/xsum) (task is summarization, interesting for hallucination detection)
+    - [ ] [HotpotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa)
+    - [ ] HaluEval
+    - [ ] DefAn
+    - [ ] ToTTo
+    - [ ] DialFact
+    - [ ] FactCC
+    - [ ] TriviaQA (General question answering, quite a large database - correct answer only with keywords, some of which are not correct or are very inaccurate, e.g., after a couple minutes exploration: (1) first european country to abolish capital punishment is not correct and (2) Prince Henry of Prussia patented the windshield wiper in 1908, not 1911)
+    - [ ] WikiFact (contains claims and evidence, goal is fact extraction, which is a different task)
 
 - [ ] Add baselines
     - [ ] FacLens (hallucination detection)
     - [ ] SelfCheckGPT (hallucination detection)
     - [ ] LLM-Check (hallucination detection)
-    - [ ] SafeNudge (Safety evaluation)
+    - [ ]
+    - [ ] SafeNudge (Safety evaluation - maybe?)
 
 - [ ] Add evaluation metrics
