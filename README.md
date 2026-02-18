@@ -21,7 +21,10 @@
     - [ ] FacLens (hallucination detection)
     - [ ] SelfCheckGPT (hallucination detection)
     - [ ] LLM-Check (hallucination detection)
-    - [ ]
+    - [ ] ?
     - [ ] SafeNudge (Safety evaluation - maybe?)
 
 - [ ] Add evaluation metrics
+    - [ ] ROUGE
+    - [ ] BLEU
+    - [ ] BERTScore

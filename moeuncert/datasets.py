@@ -106,7 +106,7 @@ def fetch_realtimeqa(split="latest", month=None):
     if "answer" in df.columns:
         df["answer_idx"] = df["answer"].apply(lambda x: x[0]).astype(int)
         df["answer_str"] = df.apply(
-            lambda row: row["options"][row["answer_idx"]], axis=1
+            lambda row: row["choices"][row["answer_idx"]], axis=1
         )
     else:
         df["answer_idx"] = df.apply(
