@@ -8,12 +8,17 @@ from tqdm.auto import tqdm
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
 
-tokenizer = AutoTokenizer.from_pretrained("allenai/OLMoE-1B-7B-0924-Instruct")
+model_name = "allenai/OLMoE-1B-7B-0924-Instruct"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token  # Required for batching
 tokenizer.padding_side = "left"  # Left padding for generation
 model = AutoModelForCausalLM.from_pretrained(
-    "allenai/OLMoE-1B-7B-0924-Instruct", attn_implementation="eager"
-).to(DEVICE)
+    model_name,
+    attn_implementation="eager",
+    torch_dtype=torch.float16,
+    device_map="auto",
+)
 
 # Load a small sample of the RealtimeQA dataset
 df = fetch_realtimeqa(split=2025, month=12).tail(10)
@@ -72,10 +77,11 @@ def tokenize_function(examples):
 tokenized = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
 tokenized.set_format(type="torch")
 
+batch_size = 2
 all_outputs = {}
 with torch.no_grad():
-    for i in tqdm(list(range(0, len(tokenized), 64))):
-        batch = tokenized[i:i+64]
+    for i in tqdm(list(range(0, len(tokenized), batch_size))):
+        batch = tokenized[i:i+batch_size]
         batch = {k: v.to(DEVICE) for k, v in batch.items()}
 
         gen_params = generate_params(
@@ -91,7 +97,7 @@ with torch.no_grad():
         outputs = model.generate(**gen_params, do_sample=False)
         for key, output in outputs.items():
             if key not in all_outputs:
-                all_outputs[key] = output.cpu()
+                all_outputs[key] = output
             all_outputs[key]
 
 outputs_dataset = Dataset.from_dict({"generated_ids": all_outputs})
