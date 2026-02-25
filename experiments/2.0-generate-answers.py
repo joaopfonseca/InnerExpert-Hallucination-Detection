@@ -1,3 +1,9 @@
+"""
+This script demonstrates how to use the OLMoE-1B-7B model for generating
+answers to questions in the RealtimeQA dataset, both with and without evidence
+(RAG simulation).
+"""
+
 from datetime import datetime
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -174,7 +180,20 @@ def run_batch_generation(tokenized_dataset, batch_size=2):
             del outputs_processed
 
     for key, value in all_outputs.items():
-        all_outputs[key] = torch.concat(value, dim=0)
+        if all(v.shape == value[0].shape for v in value):
+            all_outputs[key] = torch.concat(value, dim=0)
+        else:
+            # Pad to max size in each dimension before concatenating (e.g. variable
+            # generation lengths across batches when early stopping occurs)
+            max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
+            pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
+            padded = []
+            for t in value:
+                pad_cfg = []
+                for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
+                    pad_cfg += [0, max_sizes[d] - t.shape[d]]
+                padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
+            all_outputs[key] = torch.concat(padded, dim=0)
 
     all_outputs["generated_answer_ids"] = all_outputs["sequences"][
         :, all_outputs["input_ids"].shape[-1] :

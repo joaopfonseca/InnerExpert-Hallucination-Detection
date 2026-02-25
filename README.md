@@ -24,7 +24,8 @@
     - [ ] ?
     - [ ] SafeNudge (Safety evaluation - maybe?)
 
-- [ ] Add evaluation metrics
+- [x] Add evaluation metrics
     - [x] ROUGE
     - [x] BLEU
     - [x] BERTScore - Although this is a popular metric this is not working well for our use case. I would like to use it since it is appealing, but the absolute values are always relatively close to 1, even for very bad answers. In addition, the difference between correct and incorrect answers is basically negligible.
+    - [ ] LLM evaluation - Must be combined with human evaluation to quantify alignment with human judgement.
