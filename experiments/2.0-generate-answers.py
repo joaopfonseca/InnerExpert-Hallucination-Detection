@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from tqdm.auto import tqdm
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -11,6 +12,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
 
 model_name = "allenai/OLMoE-1B-7B-0924-Instruct"
+model_slug = model_name.replace("/", "__")
 
 # Clear cache to ensure we have enough memory for the model
 torch.cuda.empty_cache()
@@ -31,6 +33,9 @@ month = time_now.month - 1 if time_now.month > 1 else 12
 year = time_now.year if time_now.month > 1 else time_now.year - 1
 df = fetch_realtimeqa(split=year, month=month)
 # df = fetch_realtimeqa(split="latest")
+
+out_dir = Path("data") / model_slug / f"realtimeqa-{year}-{month:02d}"
+out_dir.mkdir(parents=True, exist_ok=True)
 
 messages = (
     [
@@ -177,10 +182,23 @@ def compute_scores(candidates, references):
     ]
     return {
         **rouge_scores,
-        **{f"bert_{key}": value for key, value in bert_scores.items()},
+        **{f"bert_{key}": value for key, value in bert_scores.items() if key != "hashcode"},
         "bleu": bleu_scores,
     }
 
 scores = compute_scores(candidates, references)
 
 print(scores)
+
+# Add per-sample scores to the dataframe
+score_cols = {k: v for k, v in scores.items() if isinstance(v, list)}
+for col, values in score_cols.items():
+    df[col] = values
+
+# Save the dataframe (questions, answers, and per-sample scores) as Parquet
+df.to_parquet(out_dir / "results.parquet", index=False)
+print(f"DataFrame saved to {out_dir / 'results.parquet'}")
+
+# Save model output tensors (sequences, hidden_states, attentions, scores, etc.)
+torch.save(all_outputs, out_dir / "model_outputs.pt")
+print(f"Model outputs saved to {out_dir / 'model_outputs.pt'}")
