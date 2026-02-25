@@ -1,3 +1,8 @@
+"""
+This script serves as an exploratory playground for testing the collection of
+MoE signals and the reconstruction of model outputs.
+"""
+
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
@@ -111,87 +116,5 @@ outputs_rec2 = reconstruct_model_output(
 reset_model(model)
 
 
-#######################################################################################
-# Test using hooks to capture the intermediate expert hidden states
-
-experts_activations = {}
 
 
-def make_hook(layer_idx):
-    def hook(module, input, output):
-        experts_activations[layer_idx] = module.last_experts_hidden
-
-    return hook
-
-
-for i, layer in enumerate(model.model.layers):
-    layer.mlp.register_forward_hook(make_hook(i))
-
-
-#######################################################################################
-# Modifying the forward method to output the intermediate expert hidden states
-# (maybe without using hooks?), using an output_experts_hidden flag to control
-# whether to save the expert hidden states or not.
-from moeuncert._experts_states import forward_olmoe
-
-# Test with output_experts_hidden=False (default behavior, no overhead)
-print("\n--- Test with output_experts_hidden=False ---")
-inputs = tokenizer("The capital of France is", return_tensors="pt").to(model.device)
-outputs_no_experts = model(**inputs)
-print(f"Output shape: {outputs_no_experts.logits.shape}")
-print(f"Has experts_hidden: {hasattr(outputs_no_experts, 'experts_hidden')}")
-
-# Test with output_experts_hidden=True (capture expert hidden states)
-print("\n--- Test with output_experts_hidden=True ---")
-# Note: We need to call the model in a way that propagates the output_experts_hidden flag
-# For now, we'll directly access the MoE block to demonstrate
-moe_block = model.model.layers[0].mlp
-test_hidden = torch.randn(1, 5, model.config.hidden_size, dtype=model.dtype).to(
-    model.device
-)
-result_with_experts = moe_block.forward(test_hidden, output_experts_hidden=True)
-if hasattr(moe_block, "last_experts_hidden"):
-    print(
-        f"Captured experts hidden states for {len(moe_block.last_experts_hidden)} experts"
-    )
-    for expert_idx, hidden in moe_block.last_experts_hidden.items():
-        print(f"  Expert {expert_idx}: shape {hidden.shape}")
-else:
-    print("No expert hidden states captured")
-
-print("\n--- Full model generation with expert tracking ---")
-# For full model generation, we need to explicitly set output_experts_hidden=True
-# Since we can't easily pass this through the full model forward, we'll temporarily
-# modify the lambda to always use True, run inference, then reset
-
-# Save current forwards
-original_forwards = {}
-for i, layer in enumerate(model.model.layers):
-    original_forwards[i] = layer.mlp.forward
-
-# Set all MoE blocks to capture expert states
-for i, layer in enumerate(model.model.layers):
-    layer.mlp.forward = lambda hidden_states, module=layer.mlp: forward_olmoe(
-        module, hidden_states, output_experts_hidden=True
-    )
-
-# Run inference
-inputs = tokenizer("Mixture of experts models are", return_tensors="pt").to(
-    model.device
-)
-_ = model(**inputs)
-
-# Check captured expert states
-print("Expert activations captured across layers:")
-for i, layer in enumerate(model.model.layers):
-    if hasattr(layer.mlp, "last_experts_hidden") and layer.mlp.last_experts_hidden:
-        print(f"  Layer {i}: {len(layer.mlp.last_experts_hidden)} experts activated")
-
-# Restore original forwards
-for i, layer in enumerate(model.model.layers):
-    layer.mlp.forward = original_forwards[i]
-
-print("\n✓ Script completed successfully!")
-print("Summary: The output_experts_hidden flag allows efficient control over")
-print("whether to capture intermediate expert hidden states, avoiding overhead")
-print("when not needed while enabling detailed analysis when required.")
