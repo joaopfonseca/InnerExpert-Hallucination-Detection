@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 
 def llm_description(model):
@@ -108,5 +109,96 @@ def generate_params(
     }
 
 
-def format_outputs(outputs):
-    pass
+def move_to_device(data, device="cpu"):
+    """
+    Move tensors to CPU. If the input is a list-like or dict-like, it recursively
+    moves each item to CPU.
+    """
+    if type(data) in [int, float, str]:
+        return data
+    elif isinstance(data, torch.Tensor):
+        return data.to(device)
+    elif (
+        hasattr(data, "__len__")
+        and hasattr(data, "__getitem__")
+        and not hasattr(data, "items")
+    ):
+        return type(data)([move_to_device(item, device=device) for item in data])
+    elif hasattr(data, "items"):
+        return {
+            move_to_device(key, device=device): move_to_device(value, device=device)
+            for key, value in data.items()
+        }
+    else:
+        raise ValueError(
+            f"Unsupported data type: {type(data)}. Expected torch.Tensor, "
+            "list-like, or dict-like."
+        )
+
+    return data
+
+
+def standardize_outputs(outputs, device=None):
+    """
+    Standardizes the outputs of a MoE model to a consistent format.
+
+    Output shapes:
+    - sequences: (batch_size, seq_len)
+    - hidden_states: (batch_size, seq_len, n_layers, hidden_size)
+    - attentions: (batch_size, n_layers, num_heads, seq_len, seq_len)
+    - scores: (batch_size, gen_seq_len, vocab_size)
+
+    """
+    processed_outputs = {}
+    processed_outputs["sequences"] = outputs["sequences"]  # (batch_size, seq_len)
+
+    if "hidden_states" in outputs:
+        # Original shape: (gen_seq_len, n_layers, batch_size, 1, hidden_size)
+        # outputs["hidden_states"]
+
+        # (n_layers, batch_size, seq_len, hidden_size)
+        hidden_states = torch.concat(
+            [torch.stack(hs) for hs in outputs["hidden_states"]], dim=-2
+        )
+        # (batch_size, seq_len, n_layers, hidden_size)
+        processed_outputs["hidden_states"] = hidden_states.permute(1, 2, 0, 3)
+
+    # attentions
+    if "attentions" in outputs:
+        # Original shape (que): (gen_seq_len, n_layers, batch_size, num_heads, que_len, que_len)
+        # Original shape (gen): (gen_seq_len, n_layers, batch_size, num_heads, 1, seq_len_curr)
+        max_len = outputs["sequences"].shape[1] - 1
+
+        # Pad the attention matrices to ensure they have the same shape:
+        # (..., batch_size, num_heads, -1, max_len)
+        attentions = [
+            [
+                F.pad(attn, (0, max_len - attn.shape[-1]), value=0)
+                for attn in attn_layers
+            ]
+            for attn_layers in outputs["attentions"]
+        ]
+
+        # Concat the attentions across layers and heads
+        # (n_layers, batch_size, num_heads, seq_len, seq_len)
+        attentions = torch.concat([torch.stack(attn) for attn in attentions], dim=-2)
+
+        # Permute to (batch_size, n_layers, num_heads, seq_len, seq_len)
+        processed_outputs["attentions"] = attentions.permute(1, 0, 2, 3, 4)
+
+    if "scores" in outputs:
+        # Original shape: (gen_seq_len, batch_size, vocab_size)
+        # outputs["scores"]
+        # Permute to: (batch_size, gen_seq_len, vocab_size)
+        processed_outputs["scores"] = torch.stack(outputs["scores"]).permute(1, 0, 2)
+
+    if "router_logits" in outputs:
+        pass
+
+    if "experts_hidden" in outputs:
+        pass
+
+    if device is not None:
+        processed_outputs = move_to_device(processed_outputs, device=device)
+
+    return processed_outputs

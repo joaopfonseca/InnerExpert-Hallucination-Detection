@@ -1,5 +1,6 @@
-import pandas as pd
 import requests
+import pandas as pd
+from bs4 import BeautifulSoup
 
 
 def fetch_truthfulqa():
@@ -103,6 +104,9 @@ def fetch_realtimeqa(split="latest", month=None):
     )
     data = [pd.read_json(file_url, lines=True) for file_url in file_urls]
     df = pd.concat(data, ignore_index=True)
+    df["evidence"] = df["evidence"].map(
+        lambda doc: BeautifulSoup(doc, "html.parser").get_text()
+    )
     if "answer" in df.columns:
         df["answer_idx"] = df["answer"].apply(lambda x: x[0]).astype(int)
         df["answer_str"] = df.apply(
@@ -116,7 +120,7 @@ def fetch_realtimeqa(split="latest", month=None):
             axis=1,
         )
         df["answer_idx"] = df["answer_idx"].apply(
-            lambda x: x.index(True) if True in x else -1
+            lambda x: x.index(True) if sum(x) == 1 else -1
         )
         df["answer_str"] = df.apply(
             lambda row: (
