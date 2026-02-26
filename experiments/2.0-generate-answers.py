@@ -7,6 +7,8 @@ answers to questions in the RealtimeQA dataset, both with and without evidence
 from datetime import datetime
 from pathlib import Path
 from tqdm.auto import tqdm
+import numpy as np
+import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import Dataset
@@ -33,15 +35,24 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 
-# Load a small sample of the RealtimeQA dataset
-time_now = datetime.now()
-month = time_now.month - 1 if time_now.month > 1 else 12
-year = time_now.year if time_now.month > 1 else time_now.year - 1
-df = fetch_realtimeqa(split=year, month=month)
-# df = fetch_realtimeqa(split="latest")
+# Load a sample of the RealtimeQA dataset
+# time_now = datetime.now()
+# month = time_now.month - 1 if time_now.month > 1 else 12
+# year = time_now.year if time_now.month > 1 else time_now.year - 1
+# df = fetch_realtimeqa(split=year, month=month)
+# out_dir = Path("data") / model_slug / f"realtimeqa-{year}-{month:02d}"
+# out_dir.mkdir(parents=True, exist_ok=True)
 
-out_dir = Path("data") / model_slug / f"realtimeqa-{year}-{month:02d}"
+years = [2025, 2026]
+df = pd.concat([fetch_realtimeqa(split=year) for year in years])
+
+out_dir = Path("data") / model_slug / ("realtimeqa-"+"-".join([str(y) for y in years]))
 out_dir.mkdir(parents=True, exist_ok=True)
+
+###############################################################################
+# Single question generation example
+
+rand_idx = np.random.choice(len(df))
 
 messages = (
     [
@@ -50,10 +61,10 @@ messages = (
             "content": (
                 "You are a helpful assistant who provides accurate and very concise answers "
                 "to questions about recent events. We are currently in "
-                f"{time_now.strftime('%B %Y')}."
+                f"{pd.to_datetime(df.iloc[0]['question_date']).strftime('%B %Y')}."
             ),
         },
-        {"role": "user", "content": df.iloc[0]["question_sentence"]},
+        {"role": "user", "content": df.iloc[rand_idx]["question_sentence"]},
     ],
 )
 inputs = tokenizer.apply_chat_template(
@@ -85,7 +96,7 @@ print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 dataset = Dataset.from_pandas(df)
 
 
-def tokenize_function(examples):
+def tokenize_function(examples, with_evidence=False):
     """Tokenize questions with chat template."""
     texts = [
         tokenizer.apply_chat_template(
@@ -93,63 +104,48 @@ def tokenize_function(examples):
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful assistant who provides accurate and very concise answers "
-                        "to questions about recent events. We are currently in "
-                        f"{time_now.strftime('%B %Y')}."
+                        "You are a helpful assistant who provides accurate and"
+                        "very concise answers to questions about recent"
+                        "events. We are currently in "
+                        f"{pd.to_datetime(date).strftime('%B %Y')}."
                     ),
                 },
-                {"role": "user", "content": q},
+                {
+                    "role": "user", 
+                    "content": f"Evidence: {ev}\n\nQuestion: {q}" if with_evidence else q,
+                },
             ],
             add_generation_prompt=True,
             tokenize=False,
         )
-        for q in examples["question_sentence"]
+        for q, ev, date in zip(examples["question_sentence"], examples["evidence"], examples["question_date"])
     ]
     return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
 
 tokenized = dataset.map(
-    tokenize_function, batched=True, remove_columns=dataset.column_names
+    lambda examples: tokenize_function(
+        examples, with_evidence=False
+    ), 
+    batched=True, 
+    remove_columns=dataset.column_names
 )
 tokenized.set_format(type="torch")
 
-
-def tokenize_function_rag(examples):
-    """Tokenize questions with evidence (RAG) using chat template."""
-    texts = [
-        tokenizer.apply_chat_template(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant who provides accurate and very concise answers "
-                        "to questions about recent events. We are currently in "
-                        f"{time_now.strftime('%B %Y')}."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Evidence: {ev}\n\nQuestion: {q}",
-                },
-            ],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        for q, ev in zip(examples["question_sentence"], examples["evidence"])
-    ]
-    return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
-
-
 tokenized_rag = dataset.map(
-    tokenize_function_rag, batched=True, remove_columns=dataset.column_names
+    lambda examples: tokenize_function(
+        examples, with_evidence=True
+    ), 
+    batched=True, 
+    remove_columns=dataset.column_names
 )
 tokenized_rag.set_format(type="torch")
 
-def run_batch_generation(tokenized_dataset, batch_size=2):
+def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
     """Run batched generation over a tokenized dataset, returning collated outputs."""
     all_outputs = {}
     with torch.no_grad():
-        for i in tqdm(list(range(0, len(tokenized_dataset), batch_size))):
+        for i in tqdm(enumerate(list(range(0, len(tokenized_dataset), batch_size)))):
             batch = tokenized_dataset[i : i + batch_size]
             batch = {k: v.to(DEVICE) for k, v in batch.items()}
 
@@ -179,47 +175,70 @@ def run_batch_generation(tokenized_dataset, batch_size=2):
                 del output
             del outputs_processed
 
-    for key, value in all_outputs.items():
-        if all(v.shape == value[0].shape for v in value):
-            all_outputs[key] = torch.concat(value, dim=0)
-        else:
-            # Pad to max size in each dimension before concatenating (e.g. variable
-            # generation lengths across batches when early stopping occurs)
-            max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
-            pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
-            padded = []
-            for t in value:
-                pad_cfg = []
-                for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
-                    pad_cfg += [0, max_sizes[d] - t.shape[d]]
-                padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
-            all_outputs[key] = torch.concat(padded, dim=0)
+            # This is done to save memory if the dataset is large
+            if save_path is not None:
+                filename = (
+                    f"model_outputs__batch_{i//batch_size}"
+                    f"_of_{len(tokenized_dataset)//batch_size}"
+                    f"__batch_size_{batch_size}.pt"
+                )
+                torch.save(all_outputs, save_path / filename)
+                # Clear from memory after saving
+                del all_outputs
+                all_outputs = {}  
 
-    all_outputs["generated_answer_ids"] = all_outputs["sequences"][
-        :, all_outputs["input_ids"].shape[-1] :
-    ]
-    all_outputs["generated_answer"] = tokenizer.batch_decode(
-        all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
-        skip_special_tokens=True,
-    )
+    return all_outputs
+
+def read_and_collate_outputs(file_list):
+    """Read saved batch outputs and collate into a single dictionary of tensors."""
+    # for key, value in all_outputs.items():
+    #     if all(v.shape == value[0].shape for v in value):
+    #         all_outputs[key] = torch.concat(value, dim=0)
+    #     else:
+    #         # Pad to max size in each dimension before concatenating (e.g. variable
+    #         # generation lengths across batches when early stopping occurs)
+    #         max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
+    #         pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
+    #         padded = []
+    #         for t in value:
+    #             pad_cfg = []
+    #             for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
+    #                 pad_cfg += [0, max_sizes[d] - t.shape[d]]
+    #             padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
+    #         all_outputs[key] = torch.concat(padded, dim=0)
+
+    # all_outputs["generated_answer_ids"] = all_outputs["sequences"][
+    #     :, all_outputs["input_ids"].shape[-1] :
+    # ]
+    # all_outputs["generated_answer"] = tokenizer.batch_decode(
+    #     all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
+    #     skip_special_tokens=True,
+    # )
     return all_outputs
 
 
-batch_size = 2
+batch_size = 8
 
-all_outputs = run_batch_generation(tokenized, batch_size)
+base_gen_dir = out_dir / "generations"
+base_gen_dir.mkdir(parents=True, exist_ok=True)
+all_outputs = run_batch_generation(tokenized, batch_size, save_path=base_gen_dir)
 
-references = [
-    (gt, evidence) for gt, evidence in zip(df["answer_str"], df["evidence"])
-]
-candidates = all_outputs["generated_answer"]
+# Save model output tensors (sequences, hidden_states, attentions, scores, etc.)
+# torch.save(all_outputs, out_dir / "model_outputs.pt")
+
+print(f"Model outputs saved to {out_dir / 'model_outputs.pt'}")
 
 df["generated_answer"] = all_outputs["generated_answer"]
 
-###############################################################################
+#########################################################################################
 # Batch generation with evidence (RAG simulation)
 
 all_outputs_rag = run_batch_generation(tokenized_rag, batch_size)
+
+# Save RAG model output tensors
+torch.save(all_outputs_rag, out_dir / "model_outputs_rag.pt")
+print(f"RAG model outputs saved to {out_dir / 'model_outputs_rag.pt'}")
+
 
 candidates_rag = all_outputs_rag["generated_answer"]
 df["generated_answer_rag"] = candidates_rag
@@ -227,6 +246,7 @@ df["generated_answer_rag"] = candidates_rag
 #########################################################################################
 # Metrics
 # pip install evaluate rouge_score
+
 import evaluate
 
 bertscore = evaluate.load("bertscore")
@@ -250,6 +270,11 @@ def compute_scores(candidates, references):
         "bleu": bleu_scores,
     }
 
+references = [
+    (gt, evidence) for gt, evidence in zip(df["answer_str"], df["evidence"])
+]
+candidates = all_outputs["generated_answer"]
+
 scores = compute_scores(candidates, references)
 
 print(scores)
@@ -271,11 +296,3 @@ for col, values in score_cols_rag.items():
 # Save the dataframe (questions, answers, and per-sample scores) as Parquet
 df.to_parquet(out_dir / "results.parquet", index=False)
 print(f"DataFrame saved to {out_dir / 'results.parquet'}")
-
-# Save model output tensors (sequences, hidden_states, attentions, scores, etc.)
-torch.save(all_outputs, out_dir / "model_outputs.pt")
-print(f"Model outputs saved to {out_dir / 'model_outputs.pt'}")
-
-# Save RAG model output tensors
-torch.save(all_outputs_rag, out_dir / "model_outputs_rag.pt")
-print(f"RAG model outputs saved to {out_dir / 'model_outputs_rag.pt'}")
