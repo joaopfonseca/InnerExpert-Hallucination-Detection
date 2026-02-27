@@ -91,9 +91,7 @@ outputs = model.generate(**gen_params)
 print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 
 ###############################################################################
-# Batch generation for all questions in the dataset
-
-dataset = Dataset.from_pandas(df)
+# Define some functions that will probably need to be moved later on
 
 
 def tokenize_function(examples, with_evidence=False):
@@ -123,29 +121,23 @@ def tokenize_function(examples, with_evidence=False):
     return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
 
-tokenized = dataset.map(
-    lambda examples: tokenize_function(
-        examples, with_evidence=False
-    ), 
-    batched=True, 
-    remove_columns=dataset.column_names
-)
-tokenized.set_format(type="torch")
-
-tokenized_rag = dataset.map(
-    lambda examples: tokenize_function(
-        examples, with_evidence=True
-    ), 
-    batched=True, 
-    remove_columns=dataset.column_names
-)
-tokenized_rag.set_format(type="torch")
-
 def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
     """Run batched generation over a tokenized dataset, returning collated outputs."""
     all_outputs = {}
     with torch.no_grad():
-        for i in tqdm(enumerate(list(range(0, len(tokenized_dataset), batch_size)))):
+        for i in tqdm(list(range(0, len(tokenized_dataset), batch_size))):
+            
+            # Check if batch outputs already exist (in case of re-running after an interruption)
+            if save_path is not None:
+                filename = (
+                    f"model_outputs__batch_{i//batch_size}"
+                    f"_of_{len(tokenized_dataset)//batch_size}"
+                    f"__batch_size_{batch_size}.pt"
+                )
+                if (save_path / filename).exists():
+                    print(f"Batch {i//batch_size} already exists.")
+                    continue
+
             batch = tokenized_dataset[i : i + batch_size]
             batch = {k: v.to(DEVICE) for k, v in batch.items()}
 
@@ -177,11 +169,6 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
 
             # This is done to save memory if the dataset is large
             if save_path is not None:
-                filename = (
-                    f"model_outputs__batch_{i//batch_size}"
-                    f"_of_{len(tokenized_dataset)//batch_size}"
-                    f"__batch_size_{batch_size}.pt"
-                )
                 torch.save(all_outputs, save_path / filename)
                 # Clear from memory after saving
                 del all_outputs
@@ -189,65 +176,109 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
 
     return all_outputs
 
-def read_and_collate_outputs(file_list):
-    """Read saved batch outputs and collate into a single dictionary of tensors."""
-    # for key, value in all_outputs.items():
-    #     if all(v.shape == value[0].shape for v in value):
-    #         all_outputs[key] = torch.concat(value, dim=0)
-    #     else:
-    #         # Pad to max size in each dimension before concatenating (e.g. variable
-    #         # generation lengths across batches when early stopping occurs)
-    #         max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
-    #         pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
-    #         padded = []
-    #         for t in value:
-    #             pad_cfg = []
-    #             for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
-    #                 pad_cfg += [0, max_sizes[d] - t.shape[d]]
-    #             padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
-    #         all_outputs[key] = torch.concat(padded, dim=0)
+def read_and_collate_outputs(file_list, get_keys=None):
+    """
+    Read saved batch outputs and collate into a single dictionary of tensors.
+    """
 
-    # all_outputs["generated_answer_ids"] = all_outputs["sequences"][
-    #     :, all_outputs["input_ids"].shape[-1] :
-    # ]
-    # all_outputs["generated_answer"] = tokenizer.batch_decode(
-    #     all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
-    #     skip_special_tokens=True,
-    # )
+    # Ensure we have the necessary keys to extract generated answers
+    if "generated_answer" in get_keys:
+        get_keys = set(get_keys) | {"sequences", "input_ids"}  
+
+    all_outputs = {}
+    for filepath in file_list:
+        batch_outputs = torch.load(filepath, map_location="cpu")
+        for key, value in batch_outputs.items():
+            if get_keys is not None and key not in get_keys:
+                continue
+            if key not in all_outputs:
+                all_outputs[key] = []
+            all_outputs[key].extend(value)
+
+    for key, value in all_outputs.items():
+        if all(v.shape == value[0].shape for v in value):
+            all_outputs[key] = torch.concat(value, dim=0)
+        else:
+            # Pad to max size in each dimension before concatenating (e.g. variable
+            # generation lengths across batches when early stopping occurs)
+            max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
+            pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
+            padded = []
+            for t in value:
+                pad_cfg = []
+                for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
+                    pad_cfg += [0, max_sizes[d] - t.shape[d]]
+                padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
+            all_outputs[key] = torch.concat(padded, dim=0)
+
+    if "sequences" in all_outputs and "input_ids" in all_outputs:
+        all_outputs["generated_answer_ids"] = all_outputs["sequences"][
+            :, all_outputs["input_ids"].shape[-1] :
+        ]
+        all_outputs["generated_answer"] = tokenizer.batch_decode(
+            all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
+            skip_special_tokens=True,
+        )
     return all_outputs
 
+###############################################################################
+# Batch generation for all questions in the dataset
 
-batch_size = 8
+dataset = Dataset.from_pandas(df)
 
-base_gen_dir = out_dir / "generations"
+batch_size = 6
+
+tokenized = dataset.map(
+    lambda examples: tokenize_function(
+        examples, with_evidence=False
+    ), 
+    batched=True, 
+    remove_columns=dataset.column_names
+)
+tokenized.set_format(type="torch")
+
+base_gen_dir = out_dir / "base_generation"
 base_gen_dir.mkdir(parents=True, exist_ok=True)
-all_outputs = run_batch_generation(tokenized, batch_size, save_path=base_gen_dir)
+run_batch_generation(tokenized, batch_size, save_path=base_gen_dir)
 
 # Save model output tensors (sequences, hidden_states, attentions, scores, etc.)
 # torch.save(all_outputs, out_dir / "model_outputs.pt")
 
-print(f"Model outputs saved to {out_dir / 'model_outputs.pt'}")
-
-df["generated_answer"] = all_outputs["generated_answer"]
+print(f"Model outputs saved to {base_gen_dir}")
 
 #########################################################################################
 # Batch generation with evidence (RAG simulation)
 
-all_outputs_rag = run_batch_generation(tokenized_rag, batch_size)
+tokenized_rag = dataset.map(
+    lambda examples: tokenize_function(
+        examples, with_evidence=True
+    ), 
+    batched=True, 
+    remove_columns=dataset.column_names
+)
+tokenized_rag.set_format(type="torch")
+
+evidence_gen_dir = out_dir / "evidence_generation"
+evidence_gen_dir.mkdir(parents=True, exist_ok=True)
+run_batch_generation(tokenized_rag, batch_size, save_path=evidence_gen_dir)
 
 # Save RAG model output tensors
-torch.save(all_outputs_rag, out_dir / "model_outputs_rag.pt")
-print(f"RAG model outputs saved to {out_dir / 'model_outputs_rag.pt'}")
+# torch.save(all_outputs_rag, out_dir / "model_outputs_rag.pt")
 
-
-candidates_rag = all_outputs_rag["generated_answer"]
-df["generated_answer_rag"] = candidates_rag
+print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 
 #########################################################################################
 # Metrics
 # pip install evaluate rouge_score
 
 import evaluate
+
+all_outputs = read_and_collate_outputs(base_gen_dir.iterdir(), get_keys=["generated_answer"])
+df["generated_answer"] = all_outputs["generated_answer"]
+
+all_outputs_rag = read_and_collate_outputs(evidence_gen_dir.iterdir(), get_keys=["generated_answer"])
+df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
+
 
 bertscore = evaluate.load("bertscore")
 rouge = evaluate.load("rouge")
@@ -262,6 +293,8 @@ def compute_scores(candidates, references):
     )
     bleu_scores = [
         bleu.compute(predictions=[candidate], references=[reference])["bleu"]
+        if candidate and (reference if isinstance(reference, str) else all(reference))
+        else np.nan
         for candidate, reference in zip(candidates, references)
     ]
     return {
@@ -270,14 +303,15 @@ def compute_scores(candidates, references):
         "bleu": bleu_scores,
     }
 
+# Sometimes there is no evidence
 references = [
-    (gt, evidence) for gt, evidence in zip(df["answer_str"], df["evidence"])
+    [ev for ev in (gt, evidence) if len(ev.strip()) > 0]
+    for gt, evidence in zip(df["answer_str"], df["evidence"])
 ]
 candidates = all_outputs["generated_answer"]
+candidates_rag = all_outputs_rag["generated_answer"]
 
 scores = compute_scores(candidates, references)
-
-print(scores)
 
 # Add per-sample scores to the dataframe
 score_cols = {k: v for k, v in scores.items() if isinstance(v, list)}
@@ -286,8 +320,6 @@ for col, values in score_cols.items():
 
 # Compute and store metrics for RAG version
 scores_rag = compute_scores(candidates_rag, references)
-
-print(scores_rag)
 
 score_cols_rag = {k: v for k, v in scores_rag.items() if isinstance(v, list)}
 for col, values in score_cols_rag.items():

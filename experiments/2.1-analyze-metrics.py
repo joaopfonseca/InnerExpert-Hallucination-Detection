@@ -18,7 +18,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 model_slug = "allenai__OLMoE-1B-7B-0924-Instruct"
-dataset_slug = "realtimeqa-2026-01"
+dataset_slug = "realtimeqa-2025-2026"
 
 data_dir = Path("data") / model_slug / dataset_slug
 figures_dir = Path("figures") / "2.1-analyze-metrics"
