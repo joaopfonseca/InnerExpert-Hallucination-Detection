@@ -15,6 +15,7 @@ from datasets import Dataset
 
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import generate_params, standardize_outputs, move_to_device
+from moeuncert.monitoring import MoEMonitor
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
@@ -34,6 +35,8 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.float16,
     device_map="auto",
 )
+model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
+
 
 # Load a sample of the RealtimeQA dataset
 # time_now = datetime.now()
@@ -81,12 +84,12 @@ gen_params = generate_params(
     inputs,
     tokenizer,
     max_new_tokens=65,
-    output_attentions=False,
-    output_hidden_states=False,
-    output_scores=False,
+    output_attentions=True,
+    output_hidden_states=True,
+    output_scores=True,
     output_router_logits=False,
 )
-outputs = model.generate(**gen_params)
+outputs = model_monitor.generate(**gen_params)
 
 print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 

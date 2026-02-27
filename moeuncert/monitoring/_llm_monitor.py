@@ -60,8 +60,20 @@ class MoEMonitor:
 
         return output
 
-    def generate(self, input_ids, **model_kwargs):
-        raise NotImplementedError
+    def generate(self, **model_kwargs):
+
+        if self.output_experts_hidden:
+            modify_model(self.model)
+
+        forward_kwargs = self._monitor_kwargs()
+        forward_kwargs.update(model_kwargs)
+
+        output = self.model.generate(**forward_kwargs)
+
+        if self.output_experts_hidden:
+            reset_model(self.model)
+
+        return output
 
     def forward(
         self,
