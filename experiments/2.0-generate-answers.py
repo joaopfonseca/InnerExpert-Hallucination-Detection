@@ -273,10 +273,16 @@ print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 
 import evaluate
 
-all_outputs = read_and_collate_outputs(base_gen_dir.iterdir(), get_keys=["generated_answer"])
+all_outputs = read_and_collate_outputs(
+    sorted(base_gen_dir.iterdir(), key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0])),
+    get_keys=["generated_answer"]
+)
 df["generated_answer"] = all_outputs["generated_answer"]
 
-all_outputs_rag = read_and_collate_outputs(evidence_gen_dir.iterdir(), get_keys=["generated_answer"])
+all_outputs_rag = read_and_collate_outputs(
+    sorted(evidence_gen_dir.iterdir(), key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0])),
+    get_keys=["generated_answer"]
+)
 df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
 
 

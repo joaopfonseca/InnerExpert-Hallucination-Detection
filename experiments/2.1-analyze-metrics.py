@@ -26,6 +26,9 @@ figures_dir.mkdir(parents=True, exist_ok=True)
 
 df = pd.read_parquet(data_dir / "results.parquet")
 
+# Filter to only include rows where evidence is present
+df = df[df["evidence"].map(lambda x: len(x) > 0)]
+
 SCORE_COLS = df.columns[
     df.columns.map(
         lambda x: any(
