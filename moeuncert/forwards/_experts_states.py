@@ -57,6 +57,14 @@ def modify_moe_block(moe_block):
 
     MoEBlockCustom.forward = forward_olmoe
     moe_block.__class__ = MoEBlockCustom
+
+    # accelerate replaces module.forward with a wrapper that calls _old_forward directly,
+    # bypassing the class-level patch above. Patch _old_forward too when present.
+    if hasattr(moe_block, "_old_forward"):
+        import types
+        moe_block._original_old_forward = moe_block._old_forward
+        moe_block._old_forward = types.MethodType(forward_olmoe, moe_block)
+
     return moe_block
 
 
@@ -81,6 +89,9 @@ def reset_moe_block(moe_block):
     implementation. This is useful if you want to revert the changes made by
     `modify_moe_block`.
     """
+    if hasattr(moe_block, "_original_old_forward"):
+        moe_block._old_forward = moe_block._original_old_forward
+        del moe_block._original_old_forward
     moe_block.__class__ = type(moe_block).__bases__[0]  # Reset to original class
 
 

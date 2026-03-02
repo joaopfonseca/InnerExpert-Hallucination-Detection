@@ -1,5 +1,6 @@
 from ._generation_reconstruction import reconstruct_model_output
 from ..forwards import modify_model, reset_model
+from transformers.models.olmoe.modeling_olmoe import OlmoeSparseMoeBlock
 
 
 class MoEMonitor:
@@ -68,9 +69,28 @@ class MoEMonitor:
         forward_kwargs = self._monitor_kwargs()
         forward_kwargs.update(model_kwargs)
 
+        if self.output_experts_hidden:
+            moe_blocks = [m for m in self.model.modules() if isinstance(m, OlmoeSparseMoeBlock)]
+            num_layers = len(moe_blocks)
+            _step_buffer = []
+            _all_steps = []
+
+            def make_moe_hook():
+                def hook(module, input, output):
+                    _step_buffer.append(module.last_experts_hidden)
+                    if len(_step_buffer) == num_layers:
+                        _all_steps.append(list(_step_buffer))
+                        _step_buffer.clear()
+                return hook
+
+            hooks = [m.register_forward_hook(make_moe_hook()) for m in moe_blocks]
+
         output = self.model.generate(**forward_kwargs)
 
         if self.output_experts_hidden:
+            for h in hooks:
+                h.remove()
+            output["experts_hidden"] = _all_steps
             reset_model(self.model)
 
         return output
