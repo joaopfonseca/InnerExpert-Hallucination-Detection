@@ -35,7 +35,7 @@ def forward_olmoe(self, hidden_states):
     experts_hidden = {
         "expert_idx": selected_experts.detach().cpu(),  # (num_tokens, top_k)
         "expert_weights": routing_weights.detach().cpu(),  # (num_tokens, top_k)
-        "hidden_states": torch.zeros(
+        "expert_hidden_states": torch.zeros(
             *routing_weights.shape, hidden_dim, dtype=hidden_states.dtype
         ).detach().cpu(),  # (num_tokens, top_k, hidden_dim)
     }
@@ -65,7 +65,7 @@ def forward_olmoe(self, hidden_states):
         current_hidden_states = expert_layer(current_state) # MODIFIED
 
         # MODIFIED: Save the intermediate hidden states for this expert before weighting
-        experts_hidden["hidden_states"][top_x, idx] = current_hidden_states.detach().cpu()
+        experts_hidden["expert_hidden_states"][top_x, idx] = current_hidden_states.detach().cpu()
 
         # MODIFIED
         current_hidden_states = current_hidden_states * routing_weights[top_x, idx, None]
@@ -75,7 +75,12 @@ def forward_olmoe(self, hidden_states):
         final_hidden_states.index_add_(0, top_x, current_hidden_states.to(final_hidden_states.dtype))
     final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
-    # MODIFIED: Save the experts' hidden states before the final combination step
-    self.last_experts_hidden = experts_hidden
+    # MODIFIED: Save the experts' hidden states before the final combination step,
+    # reshaping back to (batch_size, sequence_length, ...) to restore the batch dim.
+    self.last_experts_hidden = {
+        "expert_idx": experts_hidden["expert_idx"].view(batch_size, sequence_length, -1),
+        "expert_weights": experts_hidden["expert_weights"].view(batch_size, sequence_length, -1),
+        "expert_hidden_states": experts_hidden["expert_hidden_states"].view(batch_size, sequence_length, self.top_k, hidden_dim),
+    }
 
     return final_hidden_states, router_logits
