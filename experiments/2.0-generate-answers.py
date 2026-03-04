@@ -49,7 +49,9 @@ model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logit
 years = [2025, 2026]
 df = pd.concat([fetch_realtimeqa(split=year) for year in years])
 
-out_dir = Path("data") / model_slug / ("realtimeqa-"+"-".join([str(y) for y in years]))
+out_dir = (
+    Path("data") / model_slug / ("realtimeqa-" + "-".join([str(y) for y in years]))
+)
 out_dir.mkdir(parents=True, exist_ok=True)
 
 ###############################################################################
@@ -112,14 +114,20 @@ def tokenize_function(examples, with_evidence=False):
                     ),
                 },
                 {
-                    "role": "user", 
-                    "content": f"Evidence: {ev}\n\nQuestion: {q}" if with_evidence else q,
+                    "role": "user",
+                    "content": (
+                        f"Evidence: {ev}\n\nQuestion: {q}" if with_evidence else q
+                    ),
                 },
             ],
             add_generation_prompt=True,
             tokenize=False,
         )
-        for q, ev, date in zip(examples["question_sentence"], examples["evidence"], examples["question_date"])
+        for q, ev, date in zip(
+            examples["question_sentence"],
+            examples["evidence"],
+            examples["question_date"],
+        )
     ]
     return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
@@ -129,7 +137,7 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
     all_outputs = {}
     with torch.no_grad():
         for i in tqdm(list(range(0, len(tokenized_dataset), batch_size))):
-            
+
             # Check if batch outputs already exist (in case of re-running after an interruption)
             if save_path is not None:
                 filename = (
@@ -175,9 +183,10 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
                 torch.save(all_outputs, save_path / filename)
                 # Clear from memory after saving
                 del all_outputs
-                all_outputs = {}  
+                all_outputs = {}
 
     return all_outputs
+
 
 def read_and_collate_outputs(file_list, get_keys=None):
     """
@@ -186,7 +195,7 @@ def read_and_collate_outputs(file_list, get_keys=None):
 
     # Ensure we have the necessary keys to extract generated answers
     if "generated_answer" in get_keys:
-        get_keys = set(get_keys) | {"sequences", "input_ids"}  
+        get_keys = set(get_keys) | {"sequences", "input_ids"}
 
     all_outputs = {}
     for filepath in file_list:
@@ -205,11 +214,15 @@ def read_and_collate_outputs(file_list, get_keys=None):
             # Pad to max size in each dimension before concatenating (e.g. variable
             # generation lengths across batches when early stopping occurs)
             max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
-            pad_value = tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
+            pad_value = (
+                tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
+            )
             padded = []
             for t in value:
                 pad_cfg = []
-                for d in range(t.dim() - 1, 0, -1):  # F.pad pads from last dim backwards
+                for d in range(
+                    t.dim() - 1, 0, -1
+                ):  # F.pad pads from last dim backwards
                     pad_cfg += [0, max_sizes[d] - t.shape[d]]
                 padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
             all_outputs[key] = torch.concat(padded, dim=0)
@@ -224,6 +237,7 @@ def read_and_collate_outputs(file_list, get_keys=None):
         )
     return all_outputs
 
+
 ###############################################################################
 # Batch generation for all questions in the dataset
 
@@ -232,11 +246,9 @@ dataset = Dataset.from_pandas(df)
 batch_size = 6
 
 tokenized = dataset.map(
-    lambda examples: tokenize_function(
-        examples, with_evidence=False
-    ), 
-    batched=True, 
-    remove_columns=dataset.column_names
+    lambda examples: tokenize_function(examples, with_evidence=False),
+    batched=True,
+    remove_columns=dataset.column_names,
 )
 tokenized.set_format(type="torch")
 
@@ -253,11 +265,9 @@ print(f"Model outputs saved to {base_gen_dir}")
 # Batch generation with evidence (RAG simulation)
 
 tokenized_rag = dataset.map(
-    lambda examples: tokenize_function(
-        examples, with_evidence=True
-    ), 
-    batched=True, 
-    remove_columns=dataset.column_names
+    lambda examples: tokenize_function(examples, with_evidence=True),
+    batched=True,
+    remove_columns=dataset.column_names,
 )
 tokenized_rag.set_format(type="torch")
 
@@ -277,14 +287,20 @@ print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 import evaluate
 
 all_outputs = read_and_collate_outputs(
-    sorted(base_gen_dir.iterdir(), key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0])),
-    get_keys=["generated_answer"]
+    sorted(
+        base_gen_dir.iterdir(),
+        key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
+    ),
+    get_keys=["generated_answer"],
 )
 df["generated_answer"] = all_outputs["generated_answer"]
 
 all_outputs_rag = read_and_collate_outputs(
-    sorted(evidence_gen_dir.iterdir(), key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0])),
-    get_keys=["generated_answer"]
+    sorted(
+        evidence_gen_dir.iterdir(),
+        key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
+    ),
+    get_keys=["generated_answer"],
 )
 df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
 
@@ -292,6 +308,7 @@ df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
 bertscore = evaluate.load("bertscore")
 rouge = evaluate.load("rouge")
 bleu = evaluate.load("evaluate-metric/bleu")
+
 
 def compute_scores(candidates, references):
     rouge_scores = rouge.compute(
@@ -301,16 +318,24 @@ def compute_scores(candidates, references):
         predictions=candidates, references=references, lang="en", verbose=True
     )
     bleu_scores = [
-        bleu.compute(predictions=[candidate], references=[reference])["bleu"]
-        if candidate and (reference if isinstance(reference, str) else all(reference))
-        else np.nan
+        (
+            bleu.compute(predictions=[candidate], references=[reference])["bleu"]
+            if candidate
+            and (reference if isinstance(reference, str) else all(reference))
+            else np.nan
+        )
         for candidate, reference in zip(candidates, references)
     ]
     return {
         **rouge_scores,
-        **{f"bert_{key}": value for key, value in bert_scores.items() if key != "hashcode"},
+        **{
+            f"bert_{key}": value
+            for key, value in bert_scores.items()
+            if key != "hashcode"
+        },
         "bleu": bleu_scores,
     }
+
 
 # Sometimes there is no evidence
 references = [

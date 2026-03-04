@@ -70,7 +70,9 @@ class MoEMonitor:
         forward_kwargs.update(model_kwargs)
 
         if self.output_experts_hidden:
-            moe_blocks = [m for m in self.model.modules() if isinstance(m, OlmoeSparseMoeBlock)]
+            moe_blocks = [
+                m for m in self.model.modules() if isinstance(m, OlmoeSparseMoeBlock)
+            ]
             num_layers = len(moe_blocks)
             _step_buffer = []
             _all_steps = []
@@ -81,6 +83,7 @@ class MoEMonitor:
                     if len(_step_buffer) == num_layers:
                         _all_steps.append(list(_step_buffer))
                         _step_buffer.clear()
+
                 return hook
 
             hooks = [m.register_forward_hook(make_moe_hook()) for m in moe_blocks]

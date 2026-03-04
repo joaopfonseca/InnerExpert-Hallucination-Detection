@@ -62,6 +62,7 @@ def modify_moe_block(moe_block):
     # bypassing the class-level patch above. Patch _old_forward too when present.
     if hasattr(moe_block, "_old_forward"):
         import types
+
         moe_block._original_old_forward = moe_block._old_forward
         moe_block._old_forward = types.MethodType(forward_olmoe, moe_block)
 

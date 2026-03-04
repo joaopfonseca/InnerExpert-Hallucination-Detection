@@ -1,7 +1,7 @@
 """
 This script analyzes the metrics collected from the experiments and generates
 visualizations to assess their separability and whether it is feasible to use
-them as ground-truth labels. 
+them as ground-truth labels.
 
 It reads the metrics from a specified directory, processes the data, and
 creates plots to illustrate the results.
@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.preprocessing import StandardScaler
-
 
 model_slug = "allenai__OLMoE-1B-7B-0924-Instruct"
 dataset_slug = "realtimeqa-2025-2026"
@@ -31,10 +30,7 @@ df = df[df["evidence"].map(lambda x: len(x) > 0)]
 
 SCORE_COLS = df.columns[
     df.columns.map(
-        lambda x: any(
-            x.startswith(pref) 
-            for pref in ["rouge", "bert", "bleu"]
-        )
+        lambda x: any(x.startswith(pref) for pref in ["rouge", "bert", "bleu"])
     )
 ].tolist()
 
@@ -42,13 +38,18 @@ df_metrics = df[SCORE_COLS].melt(var_name="metric", value_name="score")
 df_metrics["source"] = df_metrics["metric"].apply(
     lambda x: "evidence-based" if x.endswith("rag") else "base"
 )
-df_metrics["metric"] = df_metrics["metric"].apply(
-    lambda x: x.replace("_rag", "")
-)
+df_metrics["metric"] = df_metrics["metric"].apply(lambda x: x.replace("_rag", ""))
 
 sns.set_style("whitegrid")
 plt.figure(figsize=(12, 6))
-sns.violinplot(x="metric", y="score", hue="source", data=df_metrics, split=True, density_norm="count")
+sns.violinplot(
+    x="metric",
+    y="score",
+    hue="source",
+    data=df_metrics,
+    split=True,
+    density_norm="count",
+)
 plt.title("Distribution of Metrics by Source")
 plt.xlabel("Metric")
 plt.ylabel("Score")
@@ -58,12 +59,12 @@ plt.savefig(figures_dir / "metrics_violin_plot.png")
 plt.close()
 
 #############################################################################
-# Binary classification setup 
+# Binary classification setup
 # Label: RAG instances = 1 (correct), base instances = 0 (incorrect).
 # Each row contributes two samples to the stacked dataset.
 
 BASE_COLS = [c for c in SCORE_COLS if not c.endswith("_rag")]
-RAG_COLS  = [c for c in SCORE_COLS if c.endswith("_rag")]
+RAG_COLS = [c for c in SCORE_COLS if c.endswith("_rag")]
 
 base_df = df[BASE_COLS].copy()
 base_df["label"] = 0
@@ -86,7 +87,7 @@ def optimal_threshold(y_true, scores):
 
 
 #############################################################################
-# Logistic regression on all metrics simultaneously 
+# Logistic regression on all metrics simultaneously
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 lr = LogisticRegression(max_iter=1000)
@@ -102,8 +103,13 @@ for col in BASE_COLS:
     ax.plot(fpr, tpr, label=f"{col} (AUC={auc(fpr, tpr):.2f})")
 
 fpr_lr, tpr_lr, _ = roc_curve(y, lr_scores)
-ax.plot(fpr_lr, tpr_lr, linewidth=2.5, linestyle="--",
-        label=f"logistic regression (AUC={auc(fpr_lr, tpr_lr):.2f})")
+ax.plot(
+    fpr_lr,
+    tpr_lr,
+    linewidth=2.5,
+    linestyle="--",
+    label=f"logistic regression (AUC={auc(fpr_lr, tpr_lr):.2f})",
+)
 
 ax.plot([0, 1], [0, 1], "k:", linewidth=0.8, label="random")
 ax.set_title("ROC Curves — individual metrics and logistic regression")
@@ -126,9 +132,15 @@ for ax, (name, scores) in zip(axes, classifiers):
     thresh, acc = optimal_threshold(y, scores)
     y_pred = (scores >= thresh).astype(int)
     cm = confusion_matrix(y, y_pred)
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
-                xticklabels=["Pred 0", "Pred 1"],
-                yticklabels=["True 0", "True 1"])
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        ax=ax,
+        xticklabels=["Pred 0", "Pred 1"],
+        yticklabels=["True 0", "True 1"],
+    )
     ax.set_title(f"{name}\nthresh={thresh:.2f}  acc={acc:.2f}", fontsize=8)
 
 plt.tight_layout()

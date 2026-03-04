@@ -114,7 +114,3 @@ outputs_rec2 = reconstruct_model_output(
 )
 
 reset_model(model)
-
-
-
-

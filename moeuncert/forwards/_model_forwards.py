@@ -6,6 +6,7 @@ expert hidden states.
 Later on we can add forward passes to match other MoE models as well, but for now it's specifically
 designed for OLMoE.
 """
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -37,7 +38,9 @@ def forward_olmoe(self, hidden_states):
         "expert_weights": routing_weights.detach().cpu(),  # (num_tokens, top_k)
         "expert_hidden_states": torch.zeros(
             *routing_weights.shape, hidden_dim, dtype=hidden_states.dtype
-        ).detach().cpu(),  # (num_tokens, top_k, hidden_dim)
+        )
+        .detach()
+        .cpu(),  # (num_tokens, top_k, hidden_dim)
     }
 
     final_hidden_states = torch.zeros(
@@ -49,8 +52,7 @@ def forward_olmoe(self, hidden_states):
     # One hot encode the selected experts to create an expert mask
     # this will be used to easily index which expert is going to be selected
     expert_mask = torch.nn.functional.one_hot(
-        selected_experts, 
-        num_classes=self.num_experts
+        selected_experts, num_classes=self.num_experts
     ).permute(2, 1, 0)
 
     # Loop over all available experts in the model and perform the computation on each expert
@@ -62,25 +64,39 @@ def forward_olmoe(self, hidden_states):
         # the current expert. We need to make sure to multiply the output hidden
         # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
         current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-        current_hidden_states = expert_layer(current_state) # MODIFIED
+        current_hidden_states = expert_layer(current_state)  # MODIFIED
 
         # MODIFIED: Save the intermediate hidden states for this expert before weighting
-        experts_hidden["expert_hidden_states"][top_x, idx] = current_hidden_states.detach().cpu()
+        experts_hidden["expert_hidden_states"][
+            top_x, idx
+        ] = current_hidden_states.detach().cpu()
 
         # MODIFIED
-        current_hidden_states = current_hidden_states * routing_weights[top_x, idx, None]
+        current_hidden_states = (
+            current_hidden_states * routing_weights[top_x, idx, None]
+        )
 
         # However `index_add_` only support torch tensors for indexing so we'll use
         # the `top_x` tensor here.
-        final_hidden_states.index_add_(0, top_x, current_hidden_states.to(final_hidden_states.dtype))
-    final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        final_hidden_states.index_add_(
+            0, top_x, current_hidden_states.to(final_hidden_states.dtype)
+        )
+    final_hidden_states = final_hidden_states.reshape(
+        batch_size, sequence_length, hidden_dim
+    )
 
     # MODIFIED: Save the experts' hidden states before the final combination step,
     # reshaping back to (batch_size, sequence_length, ...) to restore the batch dim.
     self.last_experts_hidden = {
-        "expert_idx": experts_hidden["expert_idx"].view(batch_size, sequence_length, -1),
-        "expert_weights": experts_hidden["expert_weights"].view(batch_size, sequence_length, -1),
-        "expert_hidden_states": experts_hidden["expert_hidden_states"].view(batch_size, sequence_length, self.top_k, hidden_dim),
+        "expert_idx": experts_hidden["expert_idx"].view(
+            batch_size, sequence_length, -1
+        ),
+        "expert_weights": experts_hidden["expert_weights"].view(
+            batch_size, sequence_length, -1
+        ),
+        "expert_hidden_states": experts_hidden["expert_hidden_states"].view(
+            batch_size, sequence_length, self.top_k, hidden_dim
+        ),
     }
 
     return final_hidden_states, router_logits
