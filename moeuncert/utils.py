@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import pandas as pd
 
 
 def llm_description(model):
@@ -138,6 +139,60 @@ def move_to_device(data, device="cpu"):
     return data
 
 
+def tokenize_realtimeqa(tokenizer, examples, with_evidence=False, texts_only=False):
+    """
+    Tokenize questions with chat template. Designed for the realtimeqa dataset,
+    which has the following fields:
+    - question_sentence: The question to be answered.
+    - evidence: The evidence provided to answer the question. Only included if
+      with_evidence=True.
+    - question_date: The date when the question was asked.
+    """
+    if with_evidence == "both":
+        texts = [
+            *tokenize_realtimeqa(
+                tokenizer, examples, with_evidence=False, texts_only=True
+            ),
+            *tokenize_realtimeqa(
+                tokenizer, examples, with_evidence=True, texts_only=True
+            ),
+        ]
+    else:
+        texts = [
+            tokenizer.apply_chat_template(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a helpful assistant who provides accurate and"
+                            "very concise answers to questions about recent"
+                            "events. Today is "
+                            f"{pd.to_datetime(date).strftime('%B %d, %Y')}."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Evidence: {ev}\n\nQuestion: {q}" if with_evidence else q
+                        ),
+                    },
+                ],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            for q, ev, date in zip(
+                examples["question_sentence"],
+                examples["evidence"],
+                examples["question_date"],
+            )
+        ]
+
+    if texts_only:
+        return texts
+    else:
+        return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+
+
 def standardize_outputs(outputs, device=None):
     """
     Standardizes the outputs of a MoE model to a consistent format.
@@ -192,11 +247,29 @@ def standardize_outputs(outputs, device=None):
         # Permute to: (batch_size, gen_seq_len, vocab_size)
         processed_outputs["scores"] = torch.stack(outputs["scores"]).permute(1, 0, 2)
 
-    if "router_logits" in outputs:
-        pass
-
     if "experts_hidden" in outputs:
-        pass
+        # Original shape: (gen_seq_len+1, n_layers, dict)
+        #   - dict keys:
+        #         expert_idx (batch_size, token_len, num_experts)
+        #         expert_weights (batch_size, num_experts)
+        #         expert_hidden_states (batch_size, num_experts, hidden_size)
+
+        for key in outputs["experts_hidden"][0][0].keys():
+            # (n_layers, batch_size, token_len, num_experts[, hidden_size])
+            experts_output = torch.concat(
+                [
+                    torch.stack([layer_info[key] for layer_info in gen_token_state])
+                    for gen_token_state in outputs["experts_hidden"]
+                ],
+                dim=2,
+            )
+
+            # Permute to (batch_size, token_len, n_layers, num_experts[, hidden_size])
+            permute_keys = [1, 2, 0, 3, 4][: experts_output.ndim]
+            processed_outputs[key] = experts_output.permute(*permute_keys)
+
+    if "router_logits" in outputs:
+        raise NotImplementedError
 
     if device is not None:
         processed_outputs = move_to_device(processed_outputs, device=device)
