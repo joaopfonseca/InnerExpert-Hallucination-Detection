@@ -51,4 +51,39 @@ print(
 ###############################################################################
 # Computing monitoring metrics
 
-outputs
+from moeuncert.metrics._metrics import hidden_score, attention_score, topk_entropy
+
+# Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
+# Shape of hidden scores: (batch_size, sequence_length, n_layers)
+hidden_scores = hidden_score(outputs["hidden_states"])
+
+# Shape of attention matrices: (batch_size, n_layers, num_heads, seq_len, seq_len)
+# Shape of attention scores: (batch_size, n_layers, num_heads, seq_len)
+attention_scores = attention_score(outputs["attentions"])
+
+# Shape of output logits: (batch_size, sequence_length, vocab_size)
+# Shape of top-k entropy scores: (batch_size, sequence_length)
+scores_entropy = topk_entropy(outputs["scores"], k=5)
+
+# Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)
+# Shape of router entropy scores: (batch_size, sequence_length, n_layers)
+router_entropy = topk_entropy(outputs["expert_weights"], softmax=False)
+
+# Shape of expert hidden states: (batch_size, sequence_length, n_layers, top_k, hidden_size)
+outputs["expert_hidden_states"]
+
+outputs["expert_idx"]
+
+
+###############################################################################
+# Visual examples
+pad_mask = outputs["sequences"] != tokenizer.pad_token_id  # (batch_size, sequence_length)
+question_length = questions_tokenized["input_ids"].shape[-1]
+
+plt.plot(router_entropy[0, question_length:, 12][pad_mask[0, question_length+1:]], label="no evidence")
+plt.plot(router_entropy[1, question_length:, 12][pad_mask[1, question_length+1:]], label="evidence-based")
+plt.legend()
+plt.title("Router entropy for layer 12")
+plt.xlabel("Token position")
+plt.ylabel("Router entropy")
+plt.show()
