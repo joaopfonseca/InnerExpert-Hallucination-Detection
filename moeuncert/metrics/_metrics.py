@@ -63,3 +63,26 @@ def topk_entropy(scores, k=None, softmax=True):
 
     entropy = -torch.sum(scores * torch.log(scores + 1e-10), dim=-1)  # (batch_size, sequence_length)
     return entropy
+
+
+def cosine_similarity(hidden_states, eps=1e-08):
+    """
+    Compute the cosine similarity among expert hidden states.
+
+    Args:
+        hidden_states: Tensor of expert hidden states with shape
+        (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+
+    Returns:
+        Tensor of cosine similarity scores with shape (batch_size,
+        sequence_length, n_layers, n_experts, n_experts)
+    """
+    norms = hidden_states.norm(dim=-1, keepdim=True).clamp_min(eps)
+    hidden_states_norm = hidden_states / norms  # (B, S, L, E, H)
+
+    # reshape to merge leading dims, then matmul, then reshape back
+    shape = hidden_states_norm.shape  # (B, S, L, E, H)
+    hsv = hidden_states_norm.reshape(-1, shape[-2], shape[-1])  # (BSL, E, H)
+    sim = torch.matmul(hsv, hsv.transpose(1, 2))  # (BSL, E, E)
+    sim = sim.reshape(*shape[:-1], shape[-2])  # (B, S, L, E, E)
+    return sim

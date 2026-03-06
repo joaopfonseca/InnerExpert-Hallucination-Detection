@@ -51,7 +51,12 @@ print(
 ###############################################################################
 # Computing monitoring metrics
 
-from moeuncert.metrics._metrics import hidden_score, attention_score, topk_entropy
+from moeuncert.metrics._metrics import (
+    hidden_score, 
+    attention_score, 
+    topk_entropy, 
+    cosine_similarity
+)
 
 # Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
 # Shape of hidden scores: (batch_size, sequence_length, n_layers)
@@ -67,23 +72,57 @@ scores_entropy = topk_entropy(outputs["scores"], k=5)
 
 # Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)
 # Shape of router entropy scores: (batch_size, sequence_length, n_layers)
+# NOTE: expert weights do not sum to 1 if
+#       model.model.layers[...].mlp.norm_topk_prob is False
 router_entropy = topk_entropy(outputs["expert_weights"], softmax=False)
 
-# Shape of expert hidden states: (batch_size, sequence_length, n_layers, top_k, hidden_size)
-outputs["expert_hidden_states"]
+# Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+# Option 1: sum hidden state score over experts, weighing by the expert weights
+expert_hidden_scores = hidden_score(outputs["expert_hidden_states"])
+expert_weights = (
+    outputs["expert_weights"] / outputs["expert_weights"].sum(dim=-1, keepdim=True)
+)  # Normalize weights
+expert_hidden_scores = (expert_hidden_scores * expert_weights).sum(dim=-1)  # Sum over experts
 
-outputs["expert_idx"]
+# Option 2: weighted sum of cosine similarity among expert hidden states
+expert_similarities = cosine_similarity(outputs["expert_hidden_states"])
+expert_weights = (
+    outputs["expert_weights"] / outputs["expert_weights"].sum(dim=-1, keepdim=True)
+)  # Normalize weights
+expert_weights = expert_weights.view(*expert_weights.shape, 1)
+expert_weights = expert_weights @ expert_weights.transpose(-1, -2)
+expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
+
+# Check usage frequency of each expert
+expert_idx = outputs["expert_idx"]
+expert_usage = torch.zeros(
+    (expert_idx.shape[0], expert_idx.shape[-2], expert_idx.max()+1,), 
+    device=expert_idx.device
+)
 
 
 ###############################################################################
 # Visual examples
+import matplotlib.pyplot as plt
+
 pad_mask = outputs["sequences"] != tokenizer.pad_token_id  # (batch_size, sequence_length)
 question_length = questions_tokenized["input_ids"].shape[-1]
 
+# Hidden state scores for layer 12
 plt.plot(router_entropy[0, question_length:, 12][pad_mask[0, question_length+1:]], label="no evidence")
 plt.plot(router_entropy[1, question_length:, 12][pad_mask[1, question_length+1:]], label="evidence-based")
 plt.legend()
 plt.title("Router entropy for layer 12")
 plt.xlabel("Token position")
 plt.ylabel("Router entropy")
+plt.show()
+
+# Expert hidden state similarity scores for layer 12
+layer_idx = -6
+plt.plot(expert_similarities[0, question_length:, layer_idx][pad_mask[0, question_length+1:]], label="no evidence")
+plt.plot(expert_similarities[1, question_length:, layer_idx][pad_mask[1, question_length+1:]], label="evidence-based")
+plt.legend()
+plt.title(f"Expert hidden state similarity for layer {layer_idx}")
+plt.xlabel("Token position")
+plt.ylabel("Similarity score")
 plt.show()
