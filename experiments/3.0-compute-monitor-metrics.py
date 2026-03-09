@@ -55,7 +55,9 @@ from moeuncert.metrics._metrics import (
     hidden_score, 
     attention_score, 
     topk_entropy, 
-    cosine_similarity
+    cosine_similarity,
+    expert_hidden_score,
+    expert_similarity_score,
 )
 
 # Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
@@ -78,28 +80,22 @@ router_entropy = topk_entropy(outputs["expert_weights"], softmax=False)
 
 # Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
 # Option 1: sum hidden state score over experts, weighing by the expert weights
-expert_hidden_scores = hidden_score(outputs["expert_hidden_states"])
-expert_weights = (
-    outputs["expert_weights"] / outputs["expert_weights"].sum(dim=-1, keepdim=True)
-)  # Normalize weights
-expert_hidden_scores = (expert_hidden_scores * expert_weights).sum(dim=-1)  # Sum over experts
-
-# Option 2: weighted sum of cosine similarity among expert hidden states
-expert_similarities = cosine_similarity(outputs["expert_hidden_states"])
-expert_weights = (
-    outputs["expert_weights"] / outputs["expert_weights"].sum(dim=-1, keepdim=True)
-)  # Normalize weights
-expert_weights = expert_weights.view(*expert_weights.shape, 1)
-expert_weights = expert_weights @ expert_weights.transpose(-1, -2)
-expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
-
-# Check usage frequency of each expert
-expert_idx = outputs["expert_idx"]
-expert_usage = torch.zeros(
-    (expert_idx.shape[0], expert_idx.shape[-2], expert_idx.max()+1,), 
-    device=expert_idx.device
+expert_hidden_scores = expert_hidden_score(
+    outputs["expert_hidden_states"], outputs["expert_weights"]
 )
 
+# Option 2: weighted sum of cosine similarity among expert hidden states
+expert_similarities = expert_similarity_score(
+    outputs["expert_hidden_states"], outputs["expert_weights"]
+)
+
+# Check usage frequency of each expert
+expert_idx = outputs["expert_idx"][:, questions_tokenized["input_ids"].shape[-1]:]
+
+expert_usage = torch.nn.functional.one_hot(
+    expert_idx, 
+    num_classes=expert_idx.max()+1
+).sum(dim=(1, 3)) # sums over tokens and selected-experts
 
 ###############################################################################
 # Visual examples
@@ -126,3 +122,26 @@ plt.title(f"Expert hidden state similarity for layer {layer_idx}")
 plt.xlabel("Token position")
 plt.ylabel("Similarity score")
 plt.show()
+
+# Plot expert usage
+fig, axes = plt.subplots(2, 1, figsize=(10, 6))
+axes[0].imshow(
+    (expert_usage[0] / expert_usage[0].sum(dim=1, keepdims=True)).cpu(), 
+    aspect="auto", 
+    cmap="Blues"
+)
+axes[0].set_title("Expert usage (no evidence)")
+axes[0].set_xlabel("Expert index")
+axes[0].set_ylabel("Layer index")
+axes[1].imshow(
+    (expert_usage[1] / expert_usage[1].sum(dim=1, keepdims=True)).cpu(), 
+    aspect="auto", 
+    cmap="Blues"
+)
+axes[1].set_title("Expert usage (with evidence)")
+axes[1].set_xlabel("Expert index")
+axes[1].set_ylabel("Layer index")
+plt.tight_layout()
+plt.savefig("expert_usage.png")
+plt.show()
+

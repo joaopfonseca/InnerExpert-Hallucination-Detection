@@ -86,3 +86,31 @@ def cosine_similarity(hidden_states, eps=1e-08):
     sim = torch.matmul(hsv, hsv.transpose(1, 2))  # (BSL, E, E)
     sim = sim.reshape(*shape[:-1], shape[-2])  # (B, S, L, E, E)
     return sim
+
+
+def expert_hidden_scores(expert_hidden_states, expert_weights):
+    # Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+    # Option 1: sum hidden state score over experts, weighing by the expert weights
+    expert_hidden_scores = hidden_score(expert_hidden_states)
+    expert_weights = (
+        expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+    )  # Normalize weights
+    expert_hidden_scores = (expert_hidden_scores * expert_weights).sum(dim=-1)  # Sum over experts
+    return expert_hidden_scores
+
+
+def expert_similarity_score(expert_hidden_states, expert_weights):
+    # Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+    # Option 2: weighted sum of cosine similarity among expert hidden states
+    expert_similarities = cosine_similarity(expert_hidden_states)
+    expert_weights = (
+        expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+    )  # Normalize weights
+    expert_weights = expert_weights.view(*expert_weights.shape, 1)
+    expert_weights = expert_weights @ expert_weights.transpose(-1, -2)
+    expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
+    return expert_similarities
+
+
+
+
