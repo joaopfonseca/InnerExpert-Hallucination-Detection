@@ -58,6 +58,7 @@ from moeuncert.metrics._metrics import (
     cosine_similarity,
     expert_hidden_score,
     expert_similarity_score,
+    expert_usage_score,
 )
 
 # Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
@@ -91,11 +92,7 @@ expert_similarities = expert_similarity_score(
 
 # Check usage frequency of each expert
 expert_idx = outputs["expert_idx"][:, questions_tokenized["input_ids"].shape[-1]:]
-
-expert_usage = torch.nn.functional.one_hot(
-    expert_idx, 
-    num_classes=expert_idx.max()+1
-).sum(dim=(1, 3)) # sums over tokens and selected-experts
+expert_usage = expert_usage_score(expert_idx)
 
 ###############################################################################
 # Visual examples

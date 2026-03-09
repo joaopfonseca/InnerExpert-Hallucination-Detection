@@ -111,6 +111,9 @@ def expert_similarity_score(expert_hidden_states, expert_weights):
     expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
     return expert_similarities
 
-
-
-
+def expert_usage_frequency(expert_idx):    
+    expert_usage = torch.nn.functional.one_hot(
+        expert_idx, 
+        num_classes=expert_idx.max()+1
+    ).sum(dim=(1, 3)) # sums over tokens and selected-experts
+    return expert_usage
