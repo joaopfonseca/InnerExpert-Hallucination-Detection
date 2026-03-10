@@ -5,6 +5,7 @@ from ._metrics import (
     expert_hidden_scores,
     expert_similarity_score,
     expert_usage_frequency,
+    compute_metrics,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "expert_hidden_scores",
     "expert_similarity_score",
     "expert_usage_frequency",
+    "compute_metrics",
 ]

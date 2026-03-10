@@ -61,7 +61,9 @@ def topk_entropy(scores, k=None, softmax=True):
     if k is not None:
         scores, _ = torch.topk(scores, k=k, dim=-1)  # (batch_size, sequence_length, k)
 
-    entropy = -torch.sum(scores * torch.log(scores + 1e-10), dim=-1)  # (batch_size, sequence_length)
+    entropy = -torch.sum(
+        scores * torch.log(scores + 1e-10), dim=-1
+    )  # (batch_size, sequence_length)
     return entropy
 
 
@@ -107,10 +109,12 @@ def expert_hidden_scores(expert_hidden_states, expert_weights):
         (batch_size, sequence_length, n_layers)
     """
     expert_hidden_scores = hidden_score(expert_hidden_states)
-    expert_weights = (
-        expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+    expert_weights = expert_weights / expert_weights.sum(
+        dim=-1, keepdim=True
     )  # Normalize weights
-    expert_hidden_scores = (expert_hidden_scores * expert_weights).sum(dim=-1)  # Sum over experts
+    expert_hidden_scores = (expert_hidden_scores * expert_weights).sum(
+        dim=-1
+    )  # Sum over experts
     return expert_hidden_scores
 
 
@@ -134,13 +138,14 @@ def expert_similarity_score(expert_hidden_states, expert_weights):
         (batch_size, sequence_length, n_layers)
     """
     expert_similarities = cosine_similarity(expert_hidden_states)
-    expert_weights = (
-        expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+    expert_weights = expert_weights / expert_weights.sum(
+        dim=-1, keepdim=True
     )  # Normalize weights
     expert_weights = expert_weights.view(*expert_weights.shape, 1)
     expert_weights = expert_weights @ expert_weights.transpose(-1, -2)
     expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
     return expert_similarities
+
 
 def expert_usage_frequency(expert_idx):
     """
@@ -158,7 +163,66 @@ def expert_usage_frequency(expert_idx):
         (batch_size, n_layers, n_experts)
     """
     expert_usage = torch.nn.functional.one_hot(
-        expert_idx, 
-        num_classes=expert_idx.max()+1
-    ).sum(dim=(1, 3)) # sums over tokens and selected-experts
+        expert_idx, num_classes=expert_idx.max() + 1
+    ).sum(
+        dim=(1, 3)
+    )  # sums over tokens and selected-experts
     return expert_usage
+
+
+def compute_metrics(standardized_outputs):
+
+    metrics = {}
+    if "hidden_states" in standardized_outputs:
+        # Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
+        # Shape of hidden scores: (batch_size, sequence_length, n_layers)
+        metrics["hidden_scores"] = hidden_score(standardized_outputs["hidden_states"])
+
+    if "attentions" in standardized_outputs:
+        # Shape of attention matrices: (batch_size, n_layers, num_heads, seq_len, seq_len)
+        # Shape of attention scores: (batch_size, n_layers, num_heads, seq_len)
+        metrics["attention_scores"] = attention_score(
+            standardized_outputs["attentions"]
+        )
+
+    if "scores" in standardized_outputs:
+        # Shape of output logits: (batch_size, sequence_length, vocab_size)
+        # Shape of top-k entropy scores: (batch_size, sequence_length)
+        metrics["scores_entropy"] = topk_entropy(standardized_outputs["scores"], k=5)
+
+    if "expert_weights" in standardized_outputs:
+        # Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)
+        # Shape of router entropy scores: (batch_size, sequence_length, n_layers)
+        # NOTE: expert weights do not sum to 1 if
+        #       model.model.layers[...].mlp.norm_topk_prob is False
+        metrics["router_entropy"] = topk_entropy(
+            standardized_outputs["expert_weights"], softmax=False
+        )
+
+    if (
+        "expert_hidden_states" in standardized_outputs
+        and "expert_weights" in standardized_outputs
+    ):
+        # Shape of expert hidden states:
+        # (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+        # Option 1: sum hidden state score over experts, weighing by the expert weights
+        metrics["expert_hidden_scores"] = expert_hidden_scores(
+            standardized_outputs["expert_hidden_states"],
+            standardized_outputs["expert_weights"],
+        )
+
+        # Option 2: weighted sum of cosine similarity among expert hidden states
+        metrics["expert_similarities"] = expert_similarity_score(
+            standardized_outputs["expert_hidden_states"],
+            standardized_outputs["expert_weights"],
+        )
+
+    if "expert_idx" in standardized_outputs:
+        # Check usage frequency of each expert
+        metrics["expert_usage"] = expert_usage_frequency(
+            standardized_outputs[
+                "expert_idx"
+            ]  # [:, standardized_outputs["input_ids"].shape[-1]:]
+        )
+
+    return metrics
