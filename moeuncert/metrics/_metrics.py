@@ -89,8 +89,23 @@ def cosine_similarity(hidden_states, eps=1e-08):
 
 
 def expert_hidden_scores(expert_hidden_states, expert_weights):
-    # Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
-    # Option 1: sum hidden state score over experts, weighing by the expert weights
+    """
+    Compute a weighted hidden state score across experts per layer.
+
+    Computes the hidden state score (via `hidden_score`) for each expert and
+    aggregates them into a single score per layer using the routing weights as
+    a weighted average.
+
+    Args:
+        expert_hidden_states: Tensor of expert hidden states with shape
+            (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+        expert_weights: Tensor of routing weights with shape
+            (batch_size, sequence_length, n_layers, n_experts)
+
+    Returns:
+        Tensor of weighted hidden state scores with shape
+        (batch_size, sequence_length, n_layers)
+    """
     expert_hidden_scores = hidden_score(expert_hidden_states)
     expert_weights = (
         expert_weights / expert_weights.sum(dim=-1, keepdim=True)
@@ -100,8 +115,24 @@ def expert_hidden_scores(expert_hidden_states, expert_weights):
 
 
 def expert_similarity_score(expert_hidden_states, expert_weights):
-    # Shape of expert hidden states: (batch_size, sequence_length, n_layers, n_experts, hidden_size)
-    # Option 2: weighted sum of cosine similarity among expert hidden states
+    """
+    Compute a routing-weight-weighted average of pairwise cosine similarities between experts.
+
+    For each token position and layer, computes the full `(n_experts, n_experts)` cosine
+    similarity matrix and takes a weighted sum using the outer product of the routing
+    weights, producing a scalar similarity score. Higher values indicate that the
+    activated experts produced more similar hidden states.
+
+    Args:
+        expert_hidden_states: Tensor of expert hidden states with shape
+            (batch_size, sequence_length, n_layers, n_experts, hidden_size)
+        expert_weights: Tensor of routing weights with shape
+            (batch_size, sequence_length, n_layers, n_experts)
+
+    Returns:
+        Tensor of weighted expert similarity scores with shape
+        (batch_size, sequence_length, n_layers)
+    """
     expert_similarities = cosine_similarity(expert_hidden_states)
     expert_weights = (
         expert_weights / expert_weights.sum(dim=-1, keepdim=True)
@@ -111,7 +142,21 @@ def expert_similarity_score(expert_hidden_states, expert_weights):
     expert_similarities = (expert_similarities * expert_weights).sum(dim=(-2, -1))
     return expert_similarities
 
-def expert_usage_frequency(expert_idx):    
+def expert_usage_frequency(expert_idx):
+    """
+    Compute how often each expert is selected across all tokens in a batch.
+
+    Counts the total number of times each expert is routed to, summing over
+    both token positions and the top-k selections per token.
+
+    Args:
+        expert_idx: Integer tensor of selected expert indices with shape
+            (batch_size, sequence_length, n_layers, top_k)
+
+    Returns:
+        Integer tensor of expert selection counts with shape
+        (batch_size, n_layers, n_experts)
+    """
     expert_usage = torch.nn.functional.one_hot(
         expert_idx, 
         num_classes=expert_idx.max()+1
