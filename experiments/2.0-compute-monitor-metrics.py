@@ -49,12 +49,12 @@ print(
 )
 
 ###############################################################################
-# Computing monitoring metrics
+# Computing monitoring metrics individually
 
 from moeuncert.metrics._metrics import (
-    hidden_score, 
-    attention_score, 
-    topk_entropy, 
+    hidden_score,
+    attention_score,
+    topk_entropy,
     cosine_similarity,
     expert_hidden_score,
     expert_similarity_score,
@@ -91,19 +91,27 @@ expert_similarities = expert_similarity_score(
 )
 
 # Check usage frequency of each expert
-expert_idx = outputs["expert_idx"][:, questions_tokenized["input_ids"].shape[-1]:]
+expert_idx = outputs["expert_idx"][:, questions_tokenized["input_ids"].shape[-1] :]
 expert_usage = expert_usage_score(expert_idx)
 
 ###############################################################################
 # Visual examples
 import matplotlib.pyplot as plt
 
-pad_mask = outputs["sequences"] != tokenizer.pad_token_id  # (batch_size, sequence_length)
+pad_mask = (
+    outputs["sequences"] != tokenizer.pad_token_id
+)  # (batch_size, sequence_length)
 question_length = questions_tokenized["input_ids"].shape[-1]
 
 # Hidden state scores for layer 12
-plt.plot(router_entropy[0, question_length:, 12][pad_mask[0, question_length+1:]], label="no evidence")
-plt.plot(router_entropy[1, question_length:, 12][pad_mask[1, question_length+1:]], label="evidence-based")
+plt.plot(
+    router_entropy[0, question_length:, 12][pad_mask[0, question_length + 1 :]],
+    label="no evidence",
+)
+plt.plot(
+    router_entropy[1, question_length:, 12][pad_mask[1, question_length + 1 :]],
+    label="evidence-based",
+)
 plt.legend()
 plt.title("Router entropy for layer 12")
 plt.xlabel("Token position")
@@ -112,8 +120,18 @@ plt.show()
 
 # Expert hidden state similarity scores for layer 12
 layer_idx = -6
-plt.plot(expert_similarities[0, question_length:, layer_idx][pad_mask[0, question_length+1:]], label="no evidence")
-plt.plot(expert_similarities[1, question_length:, layer_idx][pad_mask[1, question_length+1:]], label="evidence-based")
+plt.plot(
+    expert_similarities[0, question_length:, layer_idx][
+        pad_mask[0, question_length + 1 :]
+    ],
+    label="no evidence",
+)
+plt.plot(
+    expert_similarities[1, question_length:, layer_idx][
+        pad_mask[1, question_length + 1 :]
+    ],
+    label="evidence-based",
+)
 plt.legend()
 plt.title(f"Expert hidden state similarity for layer {layer_idx}")
 plt.xlabel("Token position")
@@ -123,17 +141,17 @@ plt.show()
 # Plot expert usage
 fig, axes = plt.subplots(2, 1, figsize=(10, 6))
 axes[0].imshow(
-    (expert_usage[0] / expert_usage[0].sum(dim=1, keepdims=True)).cpu(), 
-    aspect="auto", 
-    cmap="Blues"
+    (expert_usage[0] / expert_usage[0].sum(dim=1, keepdims=True)).cpu(),
+    aspect="auto",
+    cmap="Blues",
 )
 axes[0].set_title("Expert usage (no evidence)")
 axes[0].set_xlabel("Expert index")
 axes[0].set_ylabel("Layer index")
 axes[1].imshow(
-    (expert_usage[1] / expert_usage[1].sum(dim=1, keepdims=True)).cpu(), 
-    aspect="auto", 
-    cmap="Blues"
+    (expert_usage[1] / expert_usage[1].sum(dim=1, keepdims=True)).cpu(),
+    aspect="auto",
+    cmap="Blues",
 )
 axes[1].set_title("Expert usage (with evidence)")
 axes[1].set_xlabel("Expert index")
@@ -141,4 +159,3 @@ axes[1].set_ylabel("Layer index")
 plt.tight_layout()
 plt.savefig("expert_usage.png")
 plt.show()
-
