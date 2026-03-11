@@ -12,10 +12,17 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import Dataset
+import evaluate
 
 from moeuncert.datasets import fetch_realtimeqa
-from moeuncert.utils import generate_params, standardize_outputs, move_to_device
+from moeuncert.utils import (
+    generate_params, 
+    standardize_outputs, 
+    move_to_device,
+    tokenize_realtimeqa,
+)
 from moeuncert.monitoring import MoEMonitor
+from moeuncert.metrics import compute_metrics
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
@@ -37,99 +44,48 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
 
-
 # Load a sample of the RealtimeQA dataset
-# time_now = datetime.now()
-# month = time_now.month - 1 if time_now.month > 1 else 12
-# year = time_now.year if time_now.month > 1 else time_now.year - 1
-# df = fetch_realtimeqa(split=year, month=month)
-# out_dir = Path("data") / model_slug / f"realtimeqa-{year}-{month:02d}"
-# out_dir.mkdir(parents=True, exist_ok=True)
+time_now = datetime.now()
+month = time_now.month - 1 if time_now.month > 1 else 12
+year = time_now.year if time_now.month > 1 else time_now.year - 1
+out_dir = Path("data") / f"realtimeqa-{year}-{month:02d}"
+if not out_dir.exists():
+    df = fetch_realtimeqa(split=year, month=month)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_dir / "realtimeqa_original.parquet", index=False)
+else:
+    df = pd.read_parquet(out_dir / "realtimeqa_original.parquet")
 
-years = [2025, 2026]
-df = pd.concat([fetch_realtimeqa(split=year) for year in years])
 
-out_dir = (
-    Path("data") / model_slug / ("realtimeqa-" + "-".join([str(y) for y in years]))
-)
-out_dir.mkdir(parents=True, exist_ok=True)
+# years = [2022, 2023, 2024, 2025]
+# out_dir = (
+#     Path("data") / model_slug / ("realtimeqa-" + "-".join([str(y) for y in years]))
+# )
+# if not out_dir.exists():
+#     df = pd.concat([fetch_realtimeqa(split=year) for year in years])
+#     out_dir.mkdir(parents=True, exist_ok=True)
+#     df.to_parquet(out_dir / "realtimeqa_original.parquet", index=False)
+# else:
+#     df = pd.read_parquet(out_dir / "realtimeqa_original.parquet")
 
 ###############################################################################
 # Single question generation example
 
 rand_idx = np.random.choice(len(df))
-
-messages = (
-    [
-        {
-            "role": "system",
-            "content": (
-                "You are a helpful assistant who provides accurate and very concise answers "
-                "to questions about recent events. We are currently in "
-                f"{pd.to_datetime(df.iloc[0]['question_date']).strftime('%B %Y')}."
-            ),
-        },
-        {"role": "user", "content": df.iloc[rand_idx]["question_sentence"]},
-    ],
+inputs = tokenize_realtimeqa(
+    tokenizer, df.iloc[rand_idx : rand_idx + 1], 
+    with_evidence=False
 )
-inputs = tokenizer.apply_chat_template(
-    messages,
-    add_generation_prompt=True,
-    tokenize=True,
-    return_dict=True,
-    return_tensors="pt",
-).to(model.device)
+inputs = move_to_device(inputs, device=DEVICE)
 
 # NOTE: output_router_logits must be False for `generate`; This is a known limitation.
 # See: https://github.com/huggingface/transformers/issues/30731
-gen_params = generate_params(
-    inputs,
-    tokenizer,
-    max_new_tokens=65,
-    output_attentions=True,
-    output_hidden_states=True,
-    output_scores=True,
-    output_router_logits=False,
-)
-outputs = model_monitor.generate(**gen_params)
+outputs = model_monitor.generate(**inputs, max_new_tokens=65)
 
 print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 
 ###############################################################################
 # Define some functions that will probably need to be moved later on
-
-
-def tokenize_function(examples, with_evidence=False):
-    """Tokenize questions with chat template."""
-    texts = [
-        tokenizer.apply_chat_template(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant who provides accurate and"
-                        "very concise answers to questions about recent"
-                        "events. We are currently in "
-                        f"{pd.to_datetime(date).strftime('%B %Y')}."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Evidence: {ev}\n\nQuestion: {q}" if with_evidence else q
-                    ),
-                },
-            ],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        for q, ev, date in zip(
-            examples["question_sentence"],
-            examples["evidence"],
-            examples["question_date"],
-        )
-    ]
-    return tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
 
 def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
@@ -170,6 +126,11 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
 
             outputs = model.generate(**gen_params, do_sample=False)
             outputs_processed = standardize_outputs(outputs, device="cpu")
+            outputs_processed = {
+                "sequences": outputs_processed["sequences"],
+                **compute_metrics(outputs_processed)
+            }
+
             del outputs
             for key, output in outputs_processed.items():
                 if key not in all_outputs:
@@ -246,13 +207,13 @@ dataset = Dataset.from_pandas(df)
 batch_size = 6
 
 tokenized = dataset.map(
-    lambda examples: tokenize_function(examples, with_evidence=False),
+    lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=False),
     batched=True,
     remove_columns=dataset.column_names,
 )
 tokenized.set_format(type="torch")
 
-base_gen_dir = out_dir / "base_generation"
+base_gen_dir = out_dir / model_slug / "base_generation"
 base_gen_dir.mkdir(parents=True, exist_ok=True)
 run_batch_generation(tokenized, batch_size, save_path=base_gen_dir)
 
@@ -265,13 +226,13 @@ print(f"Model outputs saved to {base_gen_dir}")
 # Batch generation with evidence (RAG simulation)
 
 tokenized_rag = dataset.map(
-    lambda examples: tokenize_function(examples, with_evidence=True),
+    lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=True),
     batched=True,
     remove_columns=dataset.column_names,
 )
 tokenized_rag.set_format(type="torch")
 
-evidence_gen_dir = out_dir / "evidence_generation"
+evidence_gen_dir = out_dir / model_slug / "evidence_generation"
 evidence_gen_dir.mkdir(parents=True, exist_ok=True)
 run_batch_generation(tokenized_rag, batch_size, save_path=evidence_gen_dir)
 
@@ -281,10 +242,8 @@ run_batch_generation(tokenized_rag, batch_size, save_path=evidence_gen_dir)
 print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 
 #########################################################################################
-# Metrics
+# Compute metrics
 # pip install evaluate rouge_score
-
-import evaluate
 
 all_outputs = read_and_collate_outputs(
     sorted(
@@ -360,5 +319,5 @@ for col, values in score_cols_rag.items():
     df[f"{col}_rag"] = values
 
 # Save the dataframe (questions, answers, and per-sample scores) as Parquet
-df.to_parquet(out_dir / "results.parquet", index=False)
-print(f"DataFrame saved to {out_dir / 'results.parquet'}")
+df.to_parquet(out_dir / model_slug / "results.parquet", index=False)
+print(f"DataFrame saved to {out_dir / model_slug / 'results.parquet'}")
