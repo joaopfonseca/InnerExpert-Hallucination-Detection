@@ -41,7 +41,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--years",
         type=int,
-        nargs="+",
         default=None,
         help="Year(s) of the RealtimeQA dataset (e.g. --years 2025 2026). "
              "Defaults to the previous calendar month's year.",
@@ -67,8 +66,9 @@ if __name__ == "__main__":
         year = time_now.year if time_now.month > 1 else time_now.year - 1
         years = [year]
     else:
-        years = args.years
-        month = args.month
+        years = eval(args.years)
+
+    month = eval(args.month) if args.month is not None else None
 
     if len(years) == 1 and month is not None:
         dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
