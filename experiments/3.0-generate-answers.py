@@ -4,6 +4,7 @@ answers to questions in the RealtimeQA dataset, both with and without evidence
 (RAG simulation).
 """
 
+import argparse
 from datetime import datetime
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -13,6 +14,12 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import Dataset
 import evaluate
+
+try:
+    import sys
+    sys.path.append(str(Path(__file__).parent.parent))
+except NameError:
+    pass
 
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import (
@@ -25,70 +32,9 @@ from moeuncert.monitoring import MoEMonitor
 from moeuncert.metrics import compute_metrics
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Device set to: {DEVICE}")
-
-model_name = "allenai/OLMoE-1B-7B-0924-Instruct"
-model_slug = model_name.replace("/", "__")
-
-# Clear cache to ensure we have enough memory for the model
-torch.cuda.empty_cache()
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token  # Required for batching
-tokenizer.padding_side = "left"  # Left padding for generation
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    attn_implementation="eager",
-    torch_dtype=torch.float16,
-    device_map="auto",
-)
-model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
-
-# Load a sample of the RealtimeQA dataset
-time_now = datetime.now()
-month = time_now.month - 1 if time_now.month > 1 else 12
-year = time_now.year if time_now.month > 1 else time_now.year - 1
-out_dir = Path("data") / f"realtimeqa-{year}-{month:02d}"
-if not out_dir.exists():
-    df = fetch_realtimeqa(split=year, month=month)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_dir / "realtimeqa_original.parquet", index=False)
-else:
-    df = pd.read_parquet(out_dir / "realtimeqa_original.parquet")
 
 
-# years = [2022, 2023, 2024, 2025]
-# out_dir = (
-#     Path("data") / model_slug / ("realtimeqa-" + "-".join([str(y) for y in years]))
-# )
-# if not out_dir.exists():
-#     df = pd.concat([fetch_realtimeqa(split=year) for year in years])
-#     out_dir.mkdir(parents=True, exist_ok=True)
-#     df.to_parquet(out_dir / "realtimeqa_original.parquet", index=False)
-# else:
-#     df = pd.read_parquet(out_dir / "realtimeqa_original.parquet")
-
-###############################################################################
-# Single question generation example
-
-rand_idx = np.random.choice(len(df))
-inputs = tokenize_realtimeqa(
-    tokenizer, df.iloc[rand_idx : rand_idx + 1], 
-    with_evidence=False
-)
-inputs = move_to_device(inputs, device=DEVICE)
-
-# NOTE: output_router_logits must be False for `generate`; This is a known limitation.
-# See: https://github.com/huggingface/transformers/issues/30731
-outputs = model_monitor.generate(**inputs, max_new_tokens=65)
-
-print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
-
-###############################################################################
-# Define some functions that will probably need to be moved later on
-
-
-def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
+def run_batch_generation(tokenized_dataset, model, tokenizer, batch_size=2, save_path=None):
     """Run batched generation over a tokenized dataset, returning collated outputs."""
     all_outputs = {}
     with torch.no_grad():
@@ -149,7 +95,7 @@ def run_batch_generation(tokenized_dataset, batch_size=2, save_path=None):
     return all_outputs
 
 
-def read_and_collate_outputs(file_list, get_keys=None):
+def read_and_collate_outputs(file_list, tokenizer, get_keys=None):
     """
     Read saved batch outputs and collate into a single dictionary of tensors.
     """
@@ -199,77 +145,7 @@ def read_and_collate_outputs(file_list, get_keys=None):
     return all_outputs
 
 
-###############################################################################
-# Batch generation for all questions in the dataset
-
-dataset = Dataset.from_pandas(df)
-
-batch_size = 6
-
-tokenized = dataset.map(
-    lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=False),
-    batched=True,
-    remove_columns=dataset.column_names,
-)
-tokenized.set_format(type="torch")
-
-base_gen_dir = out_dir / model_slug / "base_generation"
-base_gen_dir.mkdir(parents=True, exist_ok=True)
-run_batch_generation(tokenized, batch_size, save_path=base_gen_dir)
-
-# Save model output tensors (sequences, hidden_states, attentions, scores, etc.)
-# torch.save(all_outputs, out_dir / "model_outputs.pt")
-
-print(f"Model outputs saved to {base_gen_dir}")
-
-#########################################################################################
-# Batch generation with evidence (RAG simulation)
-
-tokenized_rag = dataset.map(
-    lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=True),
-    batched=True,
-    remove_columns=dataset.column_names,
-)
-tokenized_rag.set_format(type="torch")
-
-evidence_gen_dir = out_dir / model_slug / "evidence_generation"
-evidence_gen_dir.mkdir(parents=True, exist_ok=True)
-run_batch_generation(tokenized_rag, batch_size, save_path=evidence_gen_dir)
-
-# Save RAG model output tensors
-# torch.save(all_outputs_rag, out_dir / "model_outputs_rag.pt")
-
-print(f"Evidence-based outputs saved to {evidence_gen_dir}")
-
-#########################################################################################
-# Compute metrics
-# pip install evaluate rouge_score
-
-all_outputs = read_and_collate_outputs(
-    sorted(
-        base_gen_dir.iterdir(),
-        key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
-    ),
-    get_keys=["generated_answer"],
-)
-df["generated_answer"] = all_outputs["generated_answer"]
-
-all_outputs_rag = read_and_collate_outputs(
-    sorted(
-        evidence_gen_dir.iterdir(),
-        key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
-    ),
-    get_keys=["generated_answer"],
-)
-df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
-
-
-bertscore = evaluate.load("bertscore")
-rouge = evaluate.load("rouge")
-bleu = evaluate.load("evaluate-metric/bleu")
-
-
-def compute_scores(candidates, references):
+def compute_scores(candidates, references, bertscore, rouge, bleu):
     rouge_scores = rouge.compute(
         predictions=candidates, references=references, use_aggregator=False
     )
@@ -296,28 +172,181 @@ def compute_scores(candidates, references):
     }
 
 
-# Sometimes there is no evidence
-references = [
-    [ev for ev in (gt, evidence) if len(ev.strip()) > 0]
-    for gt, evidence in zip(df["answer_str"], df["evidence"])
-]
-candidates = all_outputs["generated_answer"]
-candidates_rag = all_outputs_rag["generated_answer"]
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate answers for RealtimeQA using an instruction-tuned LLM."
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="allenai/OLMoE-1B-7B-0924-Instruct",
+        help="HuggingFace model name (default: allenai/OLMoE-1B-7B-0924-Instruct)",
+    )
+    parser.add_argument(
+        "--years",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Year(s) of the RealtimeQA dataset to download (e.g. --years 2025 2026). "
+             "Defaults to the previous calendar month's year.",
+    )
+    parser.add_argument(
+        "--month",
+        type=int,
+        default=None,
+        choices=range(1, 13),
+        metavar="MONTH",
+        help="Month (1-12) of the RealtimeQA dataset to download. "
+             "Only used when a single year is provided. "
+             "Defaults to the previous calendar month.",
+    )
+    args = parser.parse_args()
 
-scores = compute_scores(candidates, references)
+    print(f"Device set to: {DEVICE}")
 
-# Add per-sample scores to the dataframe
-score_cols = {k: v for k, v in scores.items() if isinstance(v, list)}
-for col, values in score_cols.items():
-    df[col] = values
+    model_name = args.model
+    model_slug = model_name.replace("/", "__")
 
-# Compute and store metrics for RAG version
-scores_rag = compute_scores(candidates_rag, references)
+    # Resolve dataset period
+    if args.years is None:
+        time_now = datetime.now()
+        month = time_now.month - 1 if time_now.month > 1 else 12
+        year = time_now.year if time_now.month > 1 else time_now.year - 1
+        years = [year]
+    else:
+        years = args.years
+        month = args.month
 
-score_cols_rag = {k: v for k, v in scores_rag.items() if isinstance(v, list)}
-for col, values in score_cols_rag.items():
-    df[f"{col}_rag"] = values
+    # Build output directory and load (or fetch) the dataset
+    if len(years) == 1 and month is not None:
+        dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
+    else:
+        dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
 
-# Save the dataframe (questions, answers, and per-sample scores) as Parquet
-df.to_parquet(out_dir / model_slug / "results.parquet", index=False)
-print(f"DataFrame saved to {out_dir / model_slug / 'results.parquet'}")
+    out_dir = Path("data") / dataset_slug
+    if not out_dir.exists():
+        if len(years) == 1 and month is not None:
+            df = fetch_realtimeqa(split=years[0], month=month)
+        else:
+            df = pd.concat([fetch_realtimeqa(split=y) for y in years])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out_dir / "realtimeqa_original.parquet", index=False)
+    else:
+        df = pd.read_parquet(out_dir / "realtimeqa_original.parquet")
+
+    # Clear cache to ensure we have enough memory for the model
+    torch.cuda.empty_cache()
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token  # Required for batching
+    tokenizer.padding_side = "left"  # Left padding for generation
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        attn_implementation="eager",
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
+
+    ###############################################################################
+    # Single question generation example
+
+    rand_idx = np.random.choice(len(df))
+    inputs = tokenize_realtimeqa(
+        tokenizer, df.iloc[rand_idx : rand_idx + 1],
+        with_evidence=False
+    )
+    inputs = move_to_device(inputs, device=DEVICE)
+
+    # NOTE: output_router_logits must be False for `generate`; This is a known limitation.
+    # See: https://github.com/huggingface/transformers/issues/30731
+    outputs = model_monitor.generate(**inputs, max_new_tokens=65)
+    print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
+
+    ###############################################################################
+    # Batch generation for all questions in the dataset
+
+    dataset = Dataset.from_pandas(df)
+    batch_size = 6
+
+    tokenized = dataset.map(
+        lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=False),
+        batched=True,
+        remove_columns=dataset.column_names,
+    )
+    tokenized.set_format(type="torch")
+
+    base_gen_dir = out_dir / model_slug / "base_generation"
+    base_gen_dir.mkdir(parents=True, exist_ok=True)
+    run_batch_generation(tokenized, model, tokenizer, batch_size, save_path=base_gen_dir)
+    print(f"Model outputs saved to {base_gen_dir}")
+
+    #########################################################################################
+    # Batch generation with evidence (RAG simulation)
+
+    tokenized_rag = dataset.map(
+        lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=True),
+        batched=True,
+        remove_columns=dataset.column_names,
+    )
+    tokenized_rag.set_format(type="torch")
+
+    evidence_gen_dir = out_dir / model_slug / "evidence_generation"
+    evidence_gen_dir.mkdir(parents=True, exist_ok=True)
+    run_batch_generation(tokenized_rag, model, tokenizer, batch_size, save_path=evidence_gen_dir)
+    print(f"Evidence-based outputs saved to {evidence_gen_dir}")
+
+    #########################################################################################
+    # Compute metrics
+    # pip install evaluate rouge_score
+
+    all_outputs = read_and_collate_outputs(
+        sorted(
+            base_gen_dir.iterdir(),
+            key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
+        ),
+        tokenizer,
+        get_keys=["generated_answer"],
+    )
+    df["generated_answer"] = all_outputs["generated_answer"]
+
+    all_outputs_rag = read_and_collate_outputs(
+        sorted(
+            evidence_gen_dir.iterdir(),
+            key=lambda p: int(p.stem.split("batch_")[1].split("_of_")[0]),
+        ),
+        tokenizer,
+        get_keys=["generated_answer"],
+    )
+    df["generated_answer_rag"] = all_outputs_rag["generated_answer"]
+
+    bertscore = evaluate.load("bertscore")
+    rouge = evaluate.load("rouge")
+    bleu = evaluate.load("evaluate-metric/bleu")
+
+    # Sometimes there is no evidence
+    references = [
+        [ev for ev in (gt, evidence) if len(ev.strip()) > 0]
+        for gt, evidence in zip(df["answer_str"], df["evidence"])
+    ]
+    candidates = all_outputs["generated_answer"]
+    candidates_rag = all_outputs_rag["generated_answer"]
+
+    scores = compute_scores(candidates, references, bertscore, rouge, bleu)
+
+    # Add per-sample scores to the dataframe
+    score_cols = {k: v for k, v in scores.items() if isinstance(v, list)}
+    for col, values in score_cols.items():
+        df[col] = values
+
+    # Compute and store metrics for RAG version
+    scores_rag = compute_scores(candidates_rag, references, bertscore, rouge, bleu)
+
+    score_cols_rag = {k: v for k, v in scores_rag.items() if isinstance(v, list)}
+    for col, values in score_cols_rag.items():
+        df[f"{col}_rag"] = values
+
+    # Save the dataframe (questions, answers, and per-sample scores) as Parquet
+    df.to_parquet(out_dir / model_slug / "results.parquet", index=False)
+    print(f"DataFrame saved to {out_dir / model_slug / 'results.parquet'}")
+

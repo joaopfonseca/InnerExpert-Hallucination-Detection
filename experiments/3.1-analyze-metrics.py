@@ -7,6 +7,8 @@ It reads the metrics from a specified directory, processes the data, and
 creates plots to illustrate the results.
 """
 
+import argparse
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -15,66 +17,6 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.preprocessing import StandardScaler
-
-model_slug = "allenai__OLMoE-1B-7B-0924-Instruct"
-dataset_slug = "realtimeqa-2026-02"
-
-data_dir = Path("data") / dataset_slug / model_slug
-figures_dir = Path("figures") / "3.1-analyze-metrics" / dataset_slug / model_slug
-figures_dir.mkdir(parents=True, exist_ok=True)
-
-df = pd.read_parquet(data_dir / "results.parquet")
-
-# Filter to only include rows where evidence is present
-df = df[df["evidence"].map(lambda x: len(x) > 0)]
-
-SCORE_COLS = df.columns[
-    df.columns.map(
-        lambda x: any(x.startswith(pref) for pref in ["rouge", "bert", "bleu"])
-    )
-].tolist()
-
-df_metrics = df[SCORE_COLS].melt(var_name="metric", value_name="score")
-df_metrics["source"] = df_metrics["metric"].apply(
-    lambda x: "evidence-based" if x.endswith("rag") else "base"
-)
-df_metrics["metric"] = df_metrics["metric"].apply(lambda x: x.replace("_rag", ""))
-
-sns.set_style("whitegrid")
-plt.figure(figsize=(12, 6))
-sns.violinplot(
-    x="metric",
-    y="score",
-    hue="source",
-    data=df_metrics,
-    split=True,
-    density_norm="count",
-)
-plt.title("Distribution of Metrics by Source")
-plt.xlabel("Metric")
-plt.ylabel("Score")
-plt.legend(title="Source")
-plt.tight_layout()
-plt.savefig(figures_dir / "metrics_violin_plot.png")
-plt.close()
-
-#############################################################################
-# Binary classification setup
-# Label: RAG instances = 1 (correct), base instances = 0 (incorrect).
-# Each row contributes two samples to the stacked dataset.
-
-BASE_COLS = [c for c in SCORE_COLS if not c.endswith("_rag")]
-RAG_COLS = [c for c in SCORE_COLS if c.endswith("_rag")]
-
-base_df = df[BASE_COLS].copy()
-base_df["label"] = 0
-
-rag_df = df[RAG_COLS].rename(columns=dict(zip(RAG_COLS, BASE_COLS)))
-rag_df["label"] = 1
-
-stacked = pd.concat([base_df, rag_df], ignore_index=True)
-X = stacked[BASE_COLS].values
-y = stacked["label"].values
 
 
 def optimal_threshold(y_true, scores):
@@ -86,63 +28,168 @@ def optimal_threshold(y_true, scores):
     return thresholds[best], acc[best]
 
 
-#############################################################################
-# Logistic regression on all metrics simultaneously
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-lr = LogisticRegression(max_iter=1000)
-lr.fit(X_scaled, y)
-lr_scores = lr.predict_proba(X_scaled)[:, 1]
-
-#############################################################################
-# ROC curves
-fig, ax = plt.subplots(figsize=(8, 7))
-
-for col in BASE_COLS:
-    fpr, tpr, _ = roc_curve(y, stacked[col].values)
-    ax.plot(fpr, tpr, label=f"{col} (AUC={auc(fpr, tpr):.2f})")
-
-fpr_lr, tpr_lr, _ = roc_curve(y, lr_scores)
-ax.plot(
-    fpr_lr,
-    tpr_lr,
-    linewidth=2.5,
-    linestyle="--",
-    label=f"logistic regression (AUC={auc(fpr_lr, tpr_lr):.2f})",
-)
-
-ax.plot([0, 1], [0, 1], "k:", linewidth=0.8, label="random")
-ax.set_title("ROC Curves — individual metrics and logistic regression")
-ax.set_xlabel("False Positive Rate")
-ax.set_ylabel("True Positive Rate")
-ax.legend(fontsize=8)
-plt.tight_layout()
-plt.savefig(figures_dir / "roc_curves.png", dpi=150)
-plt.close()
-
-#############################################################################
-# Confusion matrices at accuracy-optimal threshold
-classifiers = [(col, stacked[col].values) for col in BASE_COLS]
-classifiers.append(("logistic\nregression", lr_scores))
-
-n = len(classifiers)
-fig, axes = plt.subplots(1, n, figsize=(3 * n, 4))
-
-for ax, (name, scores) in zip(axes, classifiers):
-    thresh, acc = optimal_threshold(y, scores)
-    y_pred = (scores >= thresh).astype(int)
-    cm = confusion_matrix(y, y_pred)
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        ax=ax,
-        xticklabels=["Pred 0", "Pred 1"],
-        yticklabels=["True 0", "True 1"],
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Analyze generation metrics for RealtimeQA experiments."
     )
-    ax.set_title(f"{name}\nthresh={thresh:.2f}  acc={acc:.2f}", fontsize=8)
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="allenai/OLMoE-1B-7B-0924-Instruct",
+        help="HuggingFace model name (default: allenai/OLMoE-1B-7B-0924-Instruct)",
+    )
+    parser.add_argument(
+        "--years",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Year(s) of the RealtimeQA dataset (e.g. --years 2025 2026). "
+             "Defaults to the previous calendar month's year.",
+    )
+    parser.add_argument(
+        "--month",
+        type=int,
+        default=None,
+        choices=range(1, 13),
+        metavar="MONTH",
+        help="Month (1-12) of the RealtimeQA dataset. "
+             "Only used when a single year is provided. "
+             "Defaults to the previous calendar month.",
+    )
+    args = parser.parse_args()
 
-plt.tight_layout()
-plt.savefig(figures_dir / "confusion_matrices.png", dpi=150)
-plt.close()
+    model_slug = args.model.replace("/", "__")
+
+    # Resolve dataset slug using the same logic as 3.0-generate-answers.py
+    if args.years is None:
+        time_now = datetime.now()
+        month = time_now.month - 1 if time_now.month > 1 else 12
+        year = time_now.year if time_now.month > 1 else time_now.year - 1
+        years = [year]
+    else:
+        years = args.years
+        month = args.month
+
+    if len(years) == 1 and month is not None:
+        dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
+    else:
+        dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
+
+    data_dir = Path("data") / dataset_slug / model_slug
+    figures_dir = Path("figures") / "3.1-analyze-metrics" / dataset_slug / model_slug
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_parquet(data_dir / "results.parquet")
+
+    # Filter to only include rows where evidence is present
+    df = df[df["evidence"].map(lambda x: len(x) > 0)]
+
+    SCORE_COLS = df.columns[
+        df.columns.map(
+            lambda x: any(x.startswith(pref) for pref in ["rouge", "bert", "bleu"])
+        )
+    ].tolist()
+
+    df_metrics = df[SCORE_COLS].melt(var_name="metric", value_name="score")
+    df_metrics["source"] = df_metrics["metric"].apply(
+        lambda x: "evidence-based" if x.endswith("rag") else "base"
+    )
+    df_metrics["metric"] = df_metrics["metric"].apply(lambda x: x.replace("_rag", ""))
+
+    sns.set_style("whitegrid")
+    plt.figure(figsize=(12, 6))
+    sns.violinplot(
+        x="metric",
+        y="score",
+        hue="source",
+        data=df_metrics,
+        split=True,
+        density_norm="count",
+    )
+    plt.title("Distribution of Metrics by Source")
+    plt.xlabel("Metric")
+    plt.ylabel("Score")
+    plt.legend(title="Source")
+    plt.tight_layout()
+    plt.savefig(figures_dir / "metrics_violin_plot.png")
+    plt.close()
+
+    #############################################################################
+    # Binary classification setup
+    # Label: RAG instances = 1 (correct), base instances = 0 (incorrect).
+    # Each row contributes two samples to the stacked dataset.
+
+    BASE_COLS = [c for c in SCORE_COLS if not c.endswith("_rag")]
+    RAG_COLS = [c for c in SCORE_COLS if c.endswith("_rag")]
+
+    base_df = df[BASE_COLS].copy()
+    base_df["label"] = 0
+
+    rag_df = df[RAG_COLS].rename(columns=dict(zip(RAG_COLS, BASE_COLS)))
+    rag_df["label"] = 1
+
+    stacked = pd.concat([base_df, rag_df], ignore_index=True)
+    X = stacked[BASE_COLS].values
+    y = stacked["label"].values
+
+    #############################################################################
+    # Logistic regression on all metrics simultaneously
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    lr = LogisticRegression(max_iter=1000)
+    lr.fit(X_scaled, y)
+    lr_scores = lr.predict_proba(X_scaled)[:, 1]
+
+    #############################################################################
+    # ROC curves
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    for col in BASE_COLS:
+        fpr, tpr, _ = roc_curve(y, stacked[col].values)
+        ax.plot(fpr, tpr, label=f"{col} (AUC={auc(fpr, tpr):.2f})")
+
+    fpr_lr, tpr_lr, _ = roc_curve(y, lr_scores)
+    ax.plot(
+        fpr_lr,
+        tpr_lr,
+        linewidth=2.5,
+        linestyle="--",
+        label=f"logistic regression (AUC={auc(fpr_lr, tpr_lr):.2f})",
+    )
+
+    ax.plot([0, 1], [0, 1], "k:", linewidth=0.8, label="random")
+    ax.set_title("ROC Curves — individual metrics and logistic regression")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(figures_dir / "roc_curves.png", dpi=150)
+    plt.close()
+
+    #############################################################################
+    # Confusion matrices at accuracy-optimal threshold
+    classifiers = [(col, stacked[col].values) for col in BASE_COLS]
+    classifiers.append(("logistic\nregression", lr_scores))
+
+    n = len(classifiers)
+    fig, axes = plt.subplots(1, n, figsize=(3 * n, 4))
+
+    for ax, (name, scores) in zip(axes, classifiers):
+        thresh, acc = optimal_threshold(y, scores)
+        y_pred = (scores >= thresh).astype(int)
+        cm = confusion_matrix(y, y_pred)
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            ax=ax,
+            xticklabels=["Pred 0", "Pred 1"],
+            yticklabels=["True 0", "True 1"],
+        )
+        ax.set_title(f"{name}\nthresh={thresh:.2f}  acc={acc:.2f}", fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(figures_dir / "confusion_matrices.png", dpi=150)
+    plt.close()
+
