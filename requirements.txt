@@ -1,0 +1,26 @@
+# Deep learning
+torch>=2.10.0
+transformers>=4.57.6
+accelerate>=1.12.0
+datasets>=4.5.0
+
+# Evaluation metrics
+evaluate>=0.4.6
+rouge-score>=0.1.2
+bert-score>=0.3.13
+
+# Data & numerics
+numpy>=2.3.5
+pandas>=3.0.1
+
+# Visualisation
+matplotlib>=3.10.8
+seaborn>=0.13.2
+
+# ML utilities
+scikit-learn>=1.8.0
+tqdm>=4.67.3
+
+# Dataset fetching
+requests>=2.32.5
+beautifulsoup4>=4.14.3
