@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 def optimal_threshold(y_true, scores):
-    """Return the threshold that maximises accuracy and the accuracy itself."""
+    """Return the score threshold that maximises accuracy."""
     fpr, tpr, thresholds = roc_curve(y_true, scores)
     n_pos, n_neg = y_true.sum(), len(y_true) - y_true.sum()
     acc = (tpr * n_pos + (1 - fpr) * n_neg) / len(y_true)
@@ -67,10 +67,11 @@ if __name__ == "__main__":
         years = [year]
     else:
         years = eval(args.years)
+        month = eval(args.month) if args.month is not None else None
 
-    month = eval(args.month) if args.month is not None else None
-
-    if len(years) == 1 and month is not None:
+    if len(years) > 1 and month is not None:
+        raise ValueError("Month cannot be specified when multiple years are provided.")
+    elif len(years) == 1 and month is not None:
         dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
     else:
         dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
