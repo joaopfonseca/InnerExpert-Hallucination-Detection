@@ -2,6 +2,8 @@
 This script demonstrates how to use the OLMoE-1B-7B model for generating
 answers to questions in the RealtimeQA dataset, both with and without evidence
 (RAG simulation).
+
+It can be used to save the generated outputs for later analysis.
 """
 
 import argparse
