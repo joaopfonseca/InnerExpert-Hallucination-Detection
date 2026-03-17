@@ -1,9 +1,9 @@
 PROJECT_NAME = moeuncert
 
 ## Generate answers using an LLM on the RealtimeQA dataset.
-## Override with: make generate-answers GENERATE_ARGS="--model <name> --years <y> --month <m>"
+## Override with: make realtimeqa-answers ARGS="--model <name> --years <y> --month <m>"
 realtimeqa-answers:
-	python experiments/3.0-generate-answers.py $(GENERATE_ARGS)
+	python experiments/3.0-generate-answers.py $(ARGS)
 
 ## Analyze generation metrics and produce plots.
 ## Override with: make analyze-metrics ANALYZE_ARGS="--model <name> --years <y> --month <m>"

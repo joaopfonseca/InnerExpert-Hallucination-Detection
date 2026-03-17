@@ -24,3 +24,6 @@ tqdm>=4.67.3
 # Dataset fetching
 requests>=2.32.5
 beautifulsoup4>=4.14.3
+
+# Environment management
+python-dotenv>=1.2.2

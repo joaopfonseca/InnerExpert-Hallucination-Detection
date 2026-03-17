@@ -10,7 +10,6 @@ creates plots to illustrate the results.
 import argparse
 from datetime import datetime
 from pathlib import Path
-import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -18,14 +17,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.preprocessing import StandardScaler
 
+try:
+    import sys
+    sys.path.append(str(Path(__file__).parent.parent))
+except NameError:
+    pass
 
-def optimal_threshold(y_true, scores):
-    """Return the score threshold that maximises accuracy."""
-    fpr, tpr, thresholds = roc_curve(y_true, scores)
-    n_pos, n_neg = y_true.sum(), len(y_true) - y_true.sum()
-    acc = (tpr * n_pos + (1 - fpr) * n_neg) / len(y_true)
-    best = np.argmax(acc)
-    return thresholds[best], acc[best]
+from moeuncert.experiments.utils import optimal_threshold
 
 
 if __name__ == "__main__":
@@ -41,9 +39,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--years",
         type=int,
+        nargs="+",
         default=None,
-        help="Year(s) of the RealtimeQA dataset (e.g. --years 2025 2026). "
-             "Defaults to the previous calendar month's year.",
+        help="Year(s) for RealtimeQA, e.g. --years 2025 2026. Defaults to previous month year.",
     )
     parser.add_argument(
         "--month",

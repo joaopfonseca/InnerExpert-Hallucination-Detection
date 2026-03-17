@@ -186,20 +186,18 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--years",
-        type=str,
+        type=int,
+        nargs="+",
         default=None,
-        help="Year(s) of the RealtimeQA dataset to download (e.g. --years 2025 2026). "
-             "Defaults to the previous calendar month's year.",
+        help="Year(s) for RealtimeQA, e.g. --years 2025 2026. Defaults to previous month year.",
     )
     parser.add_argument(
         "--month",
-        type=str,
+        type=int,
         default=None,
         choices=range(1, 13),
         metavar="MONTH",
-        help="Month (1-12) of the RealtimeQA dataset to download. "
-             "Only used when a single year is provided. "
-             "Defaults to the previous calendar month.",
+        help="Month (1-12). Only valid when a single year is provided.",
     )
     args = parser.parse_args()
 
@@ -215,9 +213,8 @@ if __name__ == "__main__":
         year = time_now.year if time_now.month > 1 else time_now.year - 1
         years = [year]
     else:
-        years = eval(args.years)
-
-    month = eval(args.month) if args.month is not None else None
+        years = args.years
+        month = args.month
 
     # Build output directory and load (or fetch) the dataset
     if len(years) == 1 and month is not None:
