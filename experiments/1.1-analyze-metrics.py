@@ -8,7 +8,6 @@ creates plots to illustrate the results.
 """
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import seaborn as sns
@@ -23,7 +22,12 @@ try:
 except NameError:
     pass
 
-from moeuncert.experiments.utils import optimal_threshold
+from moeuncert.experiments import (
+    optimal_threshold,
+    resolve_model_slug,
+    resolve_dataset_slug,
+    build_figures_path,
+)
 
 
 if __name__ == "__main__":
@@ -55,27 +59,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    model_slug = args.model.replace("/", "__")
-
-    # Resolve dataset slug using the same logic as 3.0-generate-answers.py
-    if args.years is None:
-        time_now = datetime.now()
-        month = time_now.month - 1 if time_now.month > 1 else 12
-        year = time_now.year if time_now.month > 1 else time_now.year - 1
-        years = [year]
-    else:
-        years = eval(args.years)
-        month = eval(args.month) if args.month is not None else None
-
-    if len(years) > 1 and month is not None:
-        raise ValueError("Month cannot be specified when multiple years are provided.")
-    elif len(years) == 1 and month is not None:
-        dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
-    else:
-        dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
+    model_slug = resolve_model_slug(args.model)
+    years, month, dataset_slug = resolve_dataset_slug(args.years, args.month)
 
     data_dir = Path("data") / dataset_slug / model_slug
-    figures_dir = Path("figures") / "3.1-analyze-metrics" / dataset_slug / model_slug
+    figures_dir = build_figures_path("1.1-analyze-metrics", dataset_slug, model_slug)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_parquet(data_dir / "results.parquet")

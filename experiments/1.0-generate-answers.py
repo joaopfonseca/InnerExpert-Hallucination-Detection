@@ -7,7 +7,6 @@ It can be used to save the generated outputs for later analysis.
 """
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 from tqdm.auto import tqdm
 import numpy as np
@@ -32,6 +31,7 @@ from moeuncert.utils import (
 )
 from moeuncert.monitoring import MoEMonitor
 from moeuncert.metrics import compute_metrics
+from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -204,24 +204,10 @@ if __name__ == "__main__":
     print(f"Device set to: {DEVICE}")
 
     model_name = args.model
-    model_slug = model_name.replace("/", "__")
-
-    # Resolve dataset period
-    if args.years is None:
-        time_now = datetime.now()
-        month = time_now.month - 1 if time_now.month > 1 else 12
-        year = time_now.year if time_now.month > 1 else time_now.year - 1
-        years = [year]
-    else:
-        years = args.years
-        month = args.month
+    model_slug = resolve_model_slug(model_name)
+    years, month, dataset_slug = resolve_dataset_slug(args.years, args.month)
 
     # Build output directory and load (or fetch) the dataset
-    if len(years) == 1 and month is not None:
-        dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
-    else:
-        dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
-
     out_dir = Path("data") / dataset_slug
     if not out_dir.exists():
         if len(years) == 1 and month is not None:

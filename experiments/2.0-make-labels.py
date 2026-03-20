@@ -55,9 +55,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Sequence
 
 import numpy as np
 import pandas as pd
@@ -73,37 +72,10 @@ try:
 except NameError:
     pass
 
-from moeuncert.experiments.utils import optimal_threshold
+from moeuncert.experiments import optimal_threshold, resolve_model_slug, resolve_dataset_slug
 
 DEFAULT_MODEL = "allenai/OLMoE-1B-7B-0924-Instruct"
 METRIC_PREFIXES = ("rouge", "bert", "bleu")
-STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it",
-    "of", "on", "or", "that", "the", "this", "to", "was", "were", "with",
-}
-
-
-def resolve_dataset_slug(
-    years: Optional[Sequence[int]], month: Optional[int]
-) -> Tuple[List[int], Optional[int], str]:
-    """Resolve dataset period and slug using the same convention as 3.0/3.1."""
-    if years is None:
-        time_now = datetime.now()
-        month = time_now.month - 1 if time_now.month > 1 else 12
-        year = time_now.year if time_now.month > 1 else time_now.year - 1
-        years = [year]
-    else:
-        years = list(years)
-
-    if len(years) > 1 and month is not None:
-        raise ValueError("Month cannot be specified when multiple years are provided.")
-
-    if len(years) == 1 and month is not None:
-        dataset_slug = f"realtimeqa-{years[0]}-{month:02d}"
-    else:
-        dataset_slug = "realtimeqa-" + "-".join(str(y) for y in years)
-
-    return years, month, dataset_slug
 
 
 def expand_base_rag_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -268,70 +240,6 @@ def generate_llm_labels_and_spans(
     return labels, spans_by_row
 
 
-def _normalize_token(token: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", token.lower())
-
-
-def tokenize_with_spans(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
-    """Split text into whitespace tokens and return character spans."""
-    tokens = []
-    spans = []
-    for m in re.finditer(r"\S+", text):
-        tokens.append(m.group(0))
-        spans.append((m.start(), m.end()))
-    return tokens, spans
-
-
-def support_lexicon(*texts: str) -> set:
-    """Create normalized token set from supporting texts."""
-    lex = set()
-    for txt in texts:
-        for tok in re.findall(r"\w+", str(txt).lower()):
-            norm = _normalize_token(tok)
-            if norm:
-                lex.add(norm)
-    return lex
-
-
-def mask_from_spans(
-    answer: str, token_spans: List[Tuple[int, int]], hallucinated_spans: Sequence[str]
-) -> List[int]:
-    """Map hallucinated substrings to token mask."""
-    ans_lower = answer.lower()
-    mark = [0] * len(token_spans)
-    for span_text in hallucinated_spans:
-        span_text = str(span_text).strip().lower()
-        if not span_text:
-            continue
-        start = ans_lower.find(span_text)
-        while start != -1:
-            end = start + len(span_text)
-            for i, (tok_s, tok_e) in enumerate(token_spans):
-                if tok_e > start and tok_s < end:
-                    mark[i] = 1
-            start = ans_lower.find(span_text, start + 1)
-    return mark
-
-
-def heuristic_token_mask(
-    answer: str, answer_label: int, evidence: str, reference: str
-) -> Tuple[List[str], List[int]]:
-    """Create token hallucination mask using lexical support heuristic."""
-    tokens, _ = tokenize_with_spans(answer)
-    if answer_label == 0 or not tokens:
-        return tokens, [0] * len(tokens)
-
-    support = support_lexicon(evidence, reference)
-    mask = []
-    for token in tokens:
-        norm = _normalize_token(token)
-        if not norm or norm in STOPWORDS or len(norm) <= 2:
-            mask.append(0)
-        else:
-            mask.append(0 if norm in support else 1)
-    return tokens, mask
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Create answer-level and token-level hallucination labels."
@@ -409,7 +317,7 @@ if __name__ == "__main__":
 
     ollama_client = Client(host=args.ollama_host) if args.ollama_model else None
 
-    model_slug = args.model.replace("/", "__")
+    model_slug = resolve_model_slug(args.model)
     _, _, dataset_slug = resolve_dataset_slug(args.years, args.month)
 
     data_dir = Path("data") / dataset_slug / model_slug
@@ -422,7 +330,12 @@ if __name__ == "__main__":
         stem = Path(output_filename).stem
         suffix = Path(output_filename).suffix
         output_filename = f"{stem}_{ollama_slug}{suffix}"
+
     output_path = data_dir / output_filename
+
+    if output_path.exists():
+        raise FileExistsError(f"Output file already exists: {output_path}")
+
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 

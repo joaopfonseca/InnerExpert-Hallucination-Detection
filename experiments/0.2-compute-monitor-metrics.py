@@ -4,6 +4,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from moeuncert.monitoring import MoEMonitor
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import tokenize_realtimeqa, standardize_outputs, move_to_device
+from moeuncert.experiments import resolve_model_slug
 
 RANDOM_SEED = 42
 rng = np.random.default_rng(RANDOM_SEED)
@@ -14,7 +15,7 @@ df = fetch_realtimeqa(split="latest")
 question_sample = df.iloc[rng.choice(len(df))]
 
 model_name = "allenai/OLMoE-1B-7B-0924-Instruct"
-model_slug = model_name.replace("/", "__")
+model_slug = resolve_model_slug(model_name)
 
 # Clear cache to ensure we have enough memory for the model
 torch.cuda.empty_cache()
