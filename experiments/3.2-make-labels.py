@@ -51,6 +51,7 @@ as scripts 3.0 and 3.1.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -205,8 +206,7 @@ def generate_llm_labels_and_spans(
     ollama_client: Optional[Client],
     model: Optional[str],
     max_samples: Optional[int] = None,
-    include_spans: bool = True,
-) -> Tuple[pd.Series, pd.Series, Dict[int, List[str]]]:
+) -> Tuple[pd.Series, Dict[int, List[str]]]:
     """
     Generate answer-level labels and token-level hallucinated spans in one API call per sample.
 
@@ -215,13 +215,15 @@ def generate_llm_labels_and_spans(
         spans_by_row: mapping from row index to extracted hallucinated spans
     """
     labels = pd.Series(np.nan, index=df.index, dtype=float)
-    spans = pd.Series(np.nan, index=df.index, dtype=object)
+    spans_by_row: Dict[int, List[str]] = {}
 
     if ollama_client is None or not model:
-        raise ValueError("Ollama client and model must be provided for LLM labeling.")
+        return labels, spans_by_row
 
     work_index = list(df.index)[:max_samples] if max_samples is not None else list(df.index)
-    for idx in tqdm(work_index, desc="LLM labeling", total=len(work_index)):
+    workers = 1  # max(1, os.cpu_count() or 1)
+
+    def _label_one(idx: int) -> Tuple[int, Optional[int], List[str]]:
         row = df.loc[idx]
         prompt = (
             "Given a question, evidence, and model answer, decide whether the answer contains "
@@ -240,14 +242,30 @@ def generate_llm_labels_and_spans(
 
         obj = _ollama_chat_json(prompt, ollama_client=ollama_client, model=model)
         if not obj:
-            continue
+            return idx, None, []
 
-        label = obj.get("label", None)
-        span = obj.get("hallucinated_spans", None)
-        labels.loc[idx] = int(label)
-        spans.loc[idx] = span
+        label_obj = obj.get("label", None)
+        label: Optional[int] = int(label_obj) if label_obj in (0, 1) else None
+        spans: List[str] = []
+        spans_obj = obj.get("hallucinated_spans", [])
+        if isinstance(spans_obj, list):
+            spans = [str(x) for x in spans_obj if str(x).strip()]
+        return idx, label, spans
 
-    return labels, spans
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_label_one, idx) for idx in work_index]
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc=f"LLM labeling ({workers} threads)",
+        ):
+            idx, label, spans = future.result()
+            if label is not None:
+                labels.loc[idx] = label
+            if spans:
+                spans_by_row[idx] = spans
+
+    return labels, spans_by_row
 
 
 def _normalize_token(token: str) -> str:
@@ -361,7 +379,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ollama-model",
         type=str,
-        default="kimi-k2.5:cloud",
+        default="gemma3:1b", # "kimi-k2.5:cloud",
         help="Optional Ollama model used for LLM-based labels (e.g. llama3.1:8b).",
     )
     parser.add_argument(
@@ -389,8 +407,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.ollama_model is None:
-        print("No --ollama-model provided. LLM-based labeling will be skipped.")
     ollama_client = Client(host=args.ollama_host) if args.ollama_model else None
 
     model_slug = args.model.replace("/", "__")
@@ -398,7 +414,15 @@ if __name__ == "__main__":
 
     data_dir = Path("data") / dataset_slug / model_slug
     input_path = data_dir / args.input_file
-    output_path = data_dir / args.output_file
+
+    # Include LLM labeler model name in output filename
+    output_filename = args.output_file
+    if args.ollama_model:
+        ollama_slug = args.ollama_model.replace(":", "-").replace("/", "__")
+        stem = Path(output_filename).stem
+        suffix = Path(output_filename).suffix
+        output_filename = f"{stem}_{ollama_slug}{suffix}"
+    output_path = data_dir / output_filename
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
@@ -421,107 +445,29 @@ if __name__ == "__main__":
         ollama_client=ollama_client,
         model=args.ollama_model,
         max_samples=args.max_llm_answer_samples,
-        include_spans=args.use_ollama_token_labels,
     )
     df["label_llm_answer"] = llm_labels
-
-    # Checkpoint
-    raise RuntimeError("Checkpoint.")
-
+    df["llm_hallucinated_spans"] = df.index.map(llm_spans)
 
     train_mask = df["label_llm_answer"].notna()
-    if (
-        train_mask.sum() >= args.min_llm_train_samples
-        and df.loc[train_mask, "label_llm_answer"].nunique() > 1
-    ):
-        scaler = StandardScaler()
-        X_all = answer_feats[clf_features].to_numpy()
-        X_train = answer_feats.loc[train_mask, clf_features].to_numpy()
-        y_train = df.loc[train_mask, "label_llm_answer"].astype(int).to_numpy()
 
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_all_scaled = scaler.transform(X_all)
+    # Train answer-level LR classifier
+    scaler = StandardScaler()
+    X_all = answer_feats[clf_features].to_numpy()
+    X_train = answer_feats.loc[train_mask, clf_features].to_numpy()
+    y_train = df.loc[train_mask, "label_llm_answer"].astype(int).to_numpy()
 
-        clf = LogisticRegression(max_iter=1000)
-        clf.fit(X_train_scaled, y_train)
-        hallucination_confidence = clf.predict_proba(X_all_scaled)[:, 1]
-        source = "llm_classifier"
-    else:
-        hallucination_confidence = answer_feats["weak_hallucination_score"].to_numpy()
-        source = "weak_heuristic"
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_all_scaled = scaler.transform(X_all)
+
+    clf = LogisticRegression(max_iter=1000)
+    clf.fit(X_train_scaled, y_train)
+    hallucination_confidence = clf.predict_proba(X_all_scaled)[:, 1]
 
     df["label_hallucination_confidence"] = hallucination_confidence
-    df["label_hallucinated_answer"] = (
-        df["label_hallucination_confidence"] >= args.answer_threshold
-    ).astype(int)
-    df["label_answer_source"] = source
-
-    for col, info in thresholds.items():
-        df[f"threshold_{col}"] = info["threshold"]
-        df[f"threshold_dir_{col}"] = info["direction"]
-        df[f"threshold_acc_{col}"] = info["accuracy"]
-
-    # Generate token-level labels
-    llm_token_spans = {}
-    if args.use_ollama_token_labels:
-        llm_token_spans = llm_spans_from_joint_call
-        if args.max_llm_token_samples is not None:
-            # Optional cap for token-level labeling use, while still doing a single API pass.
-            keep_ids = set(list(df.index[df.index.isin(llm_token_spans.keys())])[:args.max_llm_token_samples])
-            llm_token_spans = {k: v for k, v in llm_token_spans.items() if k in keep_ids}
-
-    answer_tokens_col = []
-    token_mask_col = []
-    token_ratio_col = []
-    token_source_col = []
-    llm_spans_col = []
-
-    for idx, row in df.iterrows():
-        answer = str(row.get("generated_answer", ""))
-        answer_label = int(row.get("label_hallucinated_answer", 0))
-        evidence = str(row.get("evidence", ""))
-        reference = str(row.get("answer_str", ""))
-
-        spans = llm_token_spans.get(idx, [])
-        tokens, token_spans = tokenize_with_spans(answer)
-        if answer_label == 0:
-            mask = [0] * len(tokens)
-            token_source = "none"
-        elif spans:
-            mask = mask_from_spans(answer, token_spans, spans)
-            if sum(mask) == 0:
-                tokens, mask = heuristic_token_mask(answer, answer_label, evidence, reference)
-                token_source = "heuristic_fallback"
-            else:
-                token_source = "llm"
-        else:
-            tokens, mask = heuristic_token_mask(answer, answer_label, evidence, reference)
-            token_source = "heuristic"
-
-        ratio = float(sum(mask) / len(mask)) if mask else 0.0
-        answer_tokens_col.append(tokens)
-        token_mask_col.append(mask)
-        token_ratio_col.append(ratio)
-        token_source_col.append(token_source)
-        llm_spans_col.append(spans)
-
-    df["answer_tokens"] = answer_tokens_col
-    df["label_token_hallucination_mask"] = token_mask_col
-    df["label_token_hallucination_ratio"] = token_ratio_col
-    df["label_token_source"] = token_source_col
-    df["label_llm_token_spans"] = llm_spans_col
 
     # Save dataset with labels
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_path, index=False)
 
     print(f"Labeled dataset saved to {output_path}")
-    print(
-        "Summary:",
-        {
-            "rows": len(df),
-            "answer_hallucination_rate": float(df["label_hallucinated_answer"].mean()),
-            "avg_token_hallucination_ratio": float(df["label_token_hallucination_ratio"].mean()),
-            "answer_label_source": source,
-        },
-    )
