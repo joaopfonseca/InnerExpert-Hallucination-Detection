@@ -90,8 +90,6 @@ def load_model_outputs(
         Dataset identifier
     model_slug : str
         Model identifier
-    generation_type : str
-        Either 'base_generation' or 'evidence_generation'
     
     Returns
     -------
@@ -232,6 +230,25 @@ def prepare_training_data(
     
     return features, labels
 
+def print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1, random_state: int = 42):
+    df_examples = (
+        df_labeled
+        .groupby(["evidence_present", "label_weak_hallucination"])
+        .sample(1, random_state=random_state)
+    )
+
+    for i, (idx, example) in enumerate(df_examples.iterrows()):
+        print("===================================")
+        print(
+            f"EXAMPLE {i+1}:", 
+            f"has evidence: {example['evidence_present']}", 
+            f"| is hallucination: {example['label_weak_hallucination']}"
+        )
+        print("===================================")
+        print("Question:", example["question_sentence"])
+        print("Evidence:", example["evidence"])
+        print("Answer:", example["generated_answer"])
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -291,7 +308,6 @@ if __name__ == "__main__":
 
     data_dir = args.data_root / dataset_slug / model_slug
 
-    raise RuntimeError("Checkpoint.")
     
     #####################################################################################
     # Load data 
@@ -301,25 +317,23 @@ if __name__ == "__main__":
         data_dir,
         args.label_model,
     )
+
+    raise RuntimeError("Checkpoint.")
+
+    # Optionally print example samples (useful for reports)
+    # print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1)
     
     # Load model outputs for base generation
     print("\nLoading base generation outputs...")
-    outputs_dir =  generation_type
     base_batches = load_model_outputs(
-        args.data_root,
-        dataset_slug,
-        model_slug,
-        "base_generation",
+        data_dir / "base_generation"
     )
     base_outputs = collate_batches(base_batches)
     
     # Load model outputs for evidence generation
     print("\nLoading evidence generation outputs...")
     evidence_batches = load_model_outputs(
-        args.data_root,
-        dataset_slug,
-        model_slug,
-        "evidence_generation",
+        data_dir / "evidence_generation"
     )
     evidence_outputs = collate_batches(evidence_batches)
     

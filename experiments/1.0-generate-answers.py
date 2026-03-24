@@ -24,7 +24,6 @@ except NameError:
 
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import (
-    generate_params, 
     standardize_outputs, 
     move_to_device,
     tokenize_realtimeqa,
@@ -36,7 +35,7 @@ from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def run_batch_generation(tokenized_dataset, model, tokenizer, batch_size=2, save_path=None):
+def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size=2, save_path=None):
     """Run batched generation over a tokenized dataset, returning collated outputs."""
     all_outputs = {}
     with torch.no_grad():
@@ -54,25 +53,27 @@ def run_batch_generation(tokenized_dataset, model, tokenizer, batch_size=2, save
                     continue
 
             batch = tokenized_dataset[i : i + batch_size]
-            batch = {k: v.to(DEVICE) for k, v in batch.items()}
+            # batch = {k: v.to(DEVICE) for k, v in batch.items()}
 
-            gen_params = generate_params(
-                batch,
-                tokenizer,
-                max_new_tokens=65,
-                output_attentions=True,
-                output_hidden_states=True,
-                output_scores=True,
-                output_router_logits=False,
-            )
+            # gen_params = generate_params(
+            #     batch,
+            #     tokenizer,
+            #     max_new_tokens=65,
+            #     output_attentions=True,
+            #     output_hidden_states=True,
+            #     output_scores=True,
+            #     output_router_logits=False,
+            # )
 
             input_ids = move_to_device(batch["input_ids"], device="cpu")
             if "input_ids" not in all_outputs:
                 all_outputs["input_ids"] = []
             all_outputs["input_ids"].append(input_ids)
+            
+            batch = move_to_device(batch, device=DEVICE)
+            outputs = model_monitor.generate(**batch)
             del batch
 
-            outputs = model.generate(**gen_params, do_sample=False)
             outputs_processed = standardize_outputs(outputs, device="cpu")
             outputs_processed = {
                 "sequences": outputs_processed["sequences"],
@@ -263,7 +264,13 @@ if __name__ == "__main__":
 
     base_gen_dir = out_dir / model_slug / "base_generation"
     base_gen_dir.mkdir(parents=True, exist_ok=True)
-    run_batch_generation(tokenized, model, tokenizer, batch_size, save_path=base_gen_dir)
+    run_batch_generation(
+        tokenized, 
+        model_monitor, 
+        tokenizer, 
+        batch_size, 
+        save_path=base_gen_dir
+    )
     print(f"Model outputs saved to {base_gen_dir}")
 
     #########################################################################################
@@ -278,7 +285,13 @@ if __name__ == "__main__":
 
     evidence_gen_dir = out_dir / model_slug / "evidence_generation"
     evidence_gen_dir.mkdir(parents=True, exist_ok=True)
-    run_batch_generation(tokenized_rag, model, tokenizer, batch_size, save_path=evidence_gen_dir)
+    run_batch_generation(
+        tokenized_rag, 
+        model_monitor, 
+        tokenizer, 
+        batch_size, 
+        save_path=evidence_gen_dir
+    )
     print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 
     #########################################################################################

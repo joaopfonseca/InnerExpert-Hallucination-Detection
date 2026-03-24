@@ -37,7 +37,7 @@ def attention_score(attentions):
         ([batch_size, ]num_layers, num_heads, seq_length, seq_length)
 
     Returns:
-        Tensor of attention scores with shape (num_layers, seq_length)
+        Tensor of attention scores with shape (batch_size, num_layers, num_heads, seq_length)
     """
     score = torch.cumsum(torch.log(attentions.diagonal(dim1=-2, dim2=-1)), dim=-1)
     return score
