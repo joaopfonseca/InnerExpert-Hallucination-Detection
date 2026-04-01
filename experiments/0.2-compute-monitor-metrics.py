@@ -37,7 +37,7 @@ questions_tokenized = tokenize_realtimeqa(
 )
 questions_tokenized = move_to_device(questions_tokenized, device=DEVICE)
 
-outputs = model_monitor.generate(**questions_tokenized, max_new_tokens=65)
+outputs = model_monitor.generate(**questions_tokenized, max_new_tokens=100)
 outputs = standardize_outputs(outputs, device="cpu")
 
 print(
@@ -92,8 +92,11 @@ expert_similarities = expert_similarity_score(
 )
 
 # Check usage frequency of each expert
-expert_idx = outputs["expert_idx"][:, questions_tokenized["input_ids"].shape[-1] :]
-expert_usage = expert_usage_score(expert_idx)
+# expert_idx = outputs["expert_idx"][
+#     :, questions_tokenized["input_ids"].shape[-1] :
+# ]  # Only consider expert usage for generated tokens
+# TODO: check if weighted usage score is more informative than raw frequency
+expert_usage = expert_usage_frequency(outputs["expert_idx"], weights=outputs["expert_weights"])
 
 ###############################################################################
 # Visual examples
@@ -142,7 +145,7 @@ plt.show()
 # Plot expert usage
 fig, axes = plt.subplots(2, 1, figsize=(10, 6))
 axes[0].imshow(
-    (expert_usage[0] / expert_usage[0].sum(dim=1, keepdims=True)).cpu(),
+    expert_usage[0, -1, :, :].cpu(),
     aspect="auto",
     cmap="Blues",
 )
@@ -150,7 +153,7 @@ axes[0].set_title("Expert usage (no evidence)")
 axes[0].set_xlabel("Expert index")
 axes[0].set_ylabel("Layer index")
 axes[1].imshow(
-    (expert_usage[1] / expert_usage[1].sum(dim=1, keepdims=True)).cpu(),
+    expert_usage[1, -1, :, :].cpu(),
     aspect="auto",
     cmap="Blues",
 )

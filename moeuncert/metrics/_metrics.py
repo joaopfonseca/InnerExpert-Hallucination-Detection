@@ -90,7 +90,7 @@ def cosine_similarity(hidden_states, eps=1e-08):
     return sim
 
 
-def expert_hidden_scores(expert_hidden_states, expert_weights):
+def expert_hidden_score(expert_hidden_states, expert_weights):
     """
     Compute a weighted hidden state score across experts per layer.
 
@@ -147,7 +147,7 @@ def expert_similarity_score(expert_hidden_states, expert_weights):
     return expert_similarities
 
 
-def expert_usage_frequency(expert_idx):
+def expert_usage_frequency(expert_idx, weights=None):
     """
     Compute how often each expert is selected across all tokens in a batch.
 
@@ -157,6 +157,9 @@ def expert_usage_frequency(expert_idx):
     Args:
         expert_idx: Integer tensor of selected expert indices with shape
             (batch_size, sequence_length, n_layers, top_k)
+        weights: Optional tensor of routing weights with shape
+            (batch_size, sequence_length, n_layers, top_k) to compute a
+            weighted usage score instead of raw frequency
 
     Returns:
         Integer tensor of expert selection counts with shape
@@ -165,8 +168,26 @@ def expert_usage_frequency(expert_idx):
     expert_usage = torch.nn.functional.one_hot(
         expert_idx, num_classes=expert_idx.max() + 1
     ).sum(
-        dim=(1, 3)
-    )  # sums over tokens and selected-experts
+        # dim=(1, 3)  # sums over tokens and selected-experts
+        dim=3  # sum over selected-experts only, to get usage per token position
+    )  # (batch_size, sequence_length, n_layers, n_experts)
+
+    if weights is not None:
+        # If weights are provided, compute a weighted usage score
+        # Expand weights to match one-hot shape: (batch, seq, layers, top_k, n_experts)
+        one_hot = torch.nn.functional.one_hot(
+            expert_idx, num_classes=expert_idx.max() + 1
+        )  # (batch, seq, layers, top_k, n_experts)
+        weights_expanded = weights.unsqueeze(-1)  # (batch, seq, layers, top_k, 1)
+        expert_usage = (one_hot * weights_expanded).sum(dim=3)  # (batch, seq, layers, n_experts)
+
+    expert_usage = torch.cumsum(
+        expert_usage, dim=1, dtype=torch.float32
+    )  # cumulative absolute usage over sequence
+
+    expert_usage = (
+        expert_usage / expert_usage.sum(-1, keepdim=True)
+    )  # normalize by token position
     return expert_usage
 
 
