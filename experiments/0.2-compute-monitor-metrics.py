@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -5,16 +6,35 @@ from moeuncert.monitoring import MoEMonitor
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import tokenize_realtimeqa, standardize_outputs, move_to_device
 from moeuncert.experiments import resolve_model_slug
+from moeuncert.experiments.utils import get_quantization_kwargs
 
 RANDOM_SEED = 42
 rng = np.random.default_rng(RANDOM_SEED)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
 
+parser = argparse.ArgumentParser(
+    description="Compute MoE monitoring metrics for exploratory analysis."
+)
+parser.add_argument(
+    "--model",
+    type=str,
+    default="allenai/OLMoE-1B-7B-0924-Instruct",
+    help="HuggingFace model name (default: allenai/OLMoE-1B-7B-0924-Instruct)",
+)
+parser.add_argument(
+    "--quantize",
+    type=str,
+    default="16-bit",
+    choices=["16-bit", "8-bit", "4-bit"],
+    help="Quantization level for the model."
+)
+args = parser.parse_args()
+
 df = fetch_realtimeqa(split="latest")
 question_sample = df.iloc[rng.choice(len(df))]
 
-model_name = "allenai/OLMoE-1B-7B-0924-Instruct"
+model_name = args.model
 model_slug = resolve_model_slug(model_name)
 
 # Clear cache to ensure we have enough memory for the model
@@ -24,11 +44,12 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token  # Required for batching
 tokenizer.padding_side = "left"  # Left padding for generation
 
+quantization_kwargs = get_quantization_kwargs(args.quantize)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     attn_implementation="eager",
-    torch_dtype=torch.float16,
     device_map="auto",
+    **quantization_kwargs,
 )
 model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
 

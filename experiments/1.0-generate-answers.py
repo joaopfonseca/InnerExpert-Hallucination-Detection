@@ -30,7 +30,7 @@ from moeuncert.utils import (
 )
 from moeuncert.monitoring import MoEMonitor
 from moeuncert.metrics import compute_metrics
-from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug
+from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug, get_quantization_kwargs
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -186,6 +186,13 @@ if __name__ == "__main__":
         help="HuggingFace model name (default: allenai/OLMoE-1B-7B-0924-Instruct)",
     )
     parser.add_argument(
+        "--quantize",
+        type=str,
+        default="4-bit",
+        choices=["16-bit", "8-bit", "4-bit"],
+        help="Quantization level for the model."
+    )
+    parser.add_argument(
         "--years",
         type=int,
         nargs="+",
@@ -226,11 +233,12 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token  # Required for batching
     tokenizer.padding_side = "left"  # Left padding for generation
+    quantization_kwargs = get_quantization_kwargs(args.quantize)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         attn_implementation="eager",
-        torch_dtype=torch.float16,
         device_map="auto",
+        **quantization_kwargs,
     )
     model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
 

@@ -8,7 +8,11 @@ from .paths import (
     build_results_path,
     build_figures_path,
 )
-from .utils import optimal_threshold
+from .utils import (
+    optimal_threshold,
+    get_quantization_kwargs
+)
+
 
 __all__ = [
     "resolve_model_slug",
@@ -18,4 +22,5 @@ __all__ = [
     "build_results_path",
     "build_figures_path",
     "optimal_threshold",
+    "get_quantization_kwargs",
 ]

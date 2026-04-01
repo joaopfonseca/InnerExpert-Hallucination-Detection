@@ -174,7 +174,7 @@ expert_usage = count_expert_usage(expert_indices)
 | `attention_scores` | Attention weight magnitude & variance | (B, L, H, T) |
 | `scores_entropy` | Entropy over top-k logits | (B, T) |
 | `router_entropy` | Entropy over expert routing weights | (B, T, L) |
-| `expert_hidden_scores` | Weighted expert hidden uncertainty | (B, T, L) |
+| `expert_hidden_score` | Weighted expert hidden uncertainty | (B, T, L) |
 | `expert_similarities` | Inter-expert agreement score | (B, T, L) |
 | `expert_usage` | Expert selection frequency | (B, L, E) |
 

@@ -227,7 +227,7 @@ def compute_metrics(standardized_outputs):
         # Shape of expert hidden states:
         # (batch_size, sequence_length, n_layers, n_experts, hidden_size)
         # Option 1: sum hidden state score over experts, weighing by the expert weights
-        metrics["expert_hidden_scores"] = expert_hidden_scores(
+        metrics["expert_hidden_scores"] = expert_hidden_score(
             standardized_outputs["expert_hidden_states"],
             standardized_outputs["expert_weights"],
         )
