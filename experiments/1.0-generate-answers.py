@@ -30,7 +30,12 @@ from moeuncert.utils import (
 )
 from moeuncert.monitoring import MoEMonitor
 from moeuncert.metrics import compute_metrics
-from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug, get_quantization_kwargs
+from moeuncert.experiments import (
+    resolve_model_slug, 
+    resolve_dataset_slug, 
+    get_quantization_kwargs,
+    read_and_collate_outputs,
+)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -53,17 +58,13 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
                     continue
 
             batch = tokenized_dataset[i : i + batch_size]
-            # batch = {k: v.to(DEVICE) for k, v in batch.items()}
-
-            # gen_params = generate_params(
-            #     batch,
-            #     tokenizer,
-            #     max_new_tokens=65,
-            #     output_attentions=True,
-            #     output_hidden_states=True,
-            #     output_scores=True,
-            #     output_router_logits=False,
-            # )
+            
+            # Extract question_id
+            question_ids = batch["question_id"]
+            if "question_id" not in all_outputs:
+                all_outputs["question_id"] = []
+            all_outputs["question_id"].append(question_ids)
+            del batch["question_id"]
 
             input_ids = move_to_device(batch["input_ids"], device="cpu")
             if "input_ids" not in all_outputs:
@@ -95,56 +96,6 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
                 del all_outputs
                 all_outputs = {}
 
-    return all_outputs
-
-
-def read_and_collate_outputs(file_list, tokenizer, get_keys=None):
-    """
-    Read saved batch outputs and collate into a single dictionary of tensors.
-    """
-
-    # Ensure we have the necessary keys to extract generated answers
-    if "generated_answer" in get_keys:
-        get_keys = set(get_keys) | {"sequences", "input_ids"}
-
-    all_outputs = {}
-    for filepath in file_list:
-        batch_outputs = torch.load(filepath, map_location="cpu")
-        for key, value in batch_outputs.items():
-            if get_keys is not None and key not in get_keys:
-                continue
-            if key not in all_outputs:
-                all_outputs[key] = []
-            all_outputs[key].extend(value)
-
-    for key, value in all_outputs.items():
-        if all(v.shape == value[0].shape for v in value):
-            all_outputs[key] = torch.concat(value, dim=0)
-        else:
-            # Pad to max size in each dimension before concatenating (e.g. variable
-            # generation lengths across batches when early stopping occurs)
-            max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
-            pad_value = (
-                tokenizer.pad_token_id if key in ("sequences", "input_ids") else 0
-            )
-            padded = []
-            for t in value:
-                pad_cfg = []
-                for d in range(
-                    t.dim() - 1, 0, -1
-                ):  # F.pad pads from last dim backwards
-                    pad_cfg += [0, max_sizes[d] - t.shape[d]]
-                padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
-            all_outputs[key] = torch.concat(padded, dim=0)
-
-    if "sequences" in all_outputs and "input_ids" in all_outputs:
-        all_outputs["generated_answer_ids"] = all_outputs["sequences"][
-            :, all_outputs["input_ids"].shape[-1] :
-        ]
-        all_outputs["generated_answer"] = tokenizer.batch_decode(
-            all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
-            skip_special_tokens=True,
-        )
     return all_outputs
 
 
@@ -266,7 +217,7 @@ if __name__ == "__main__":
     tokenized = dataset.map(
         lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=False),
         batched=True,
-        remove_columns=dataset.column_names,
+        remove_columns=[col for col in dataset.column_names if col != "question_id"],
     )
     tokenized.set_format(type="torch")
 
@@ -287,7 +238,7 @@ if __name__ == "__main__":
     tokenized_rag = dataset.map(
         lambda examples: tokenize_realtimeqa(tokenizer, examples, with_evidence=True),
         batched=True,
-        remove_columns=dataset.column_names,
+        remove_columns=[col for col in dataset.column_names if col != "question_id"],
     )
     tokenized_rag.set_format(type="torch")
 

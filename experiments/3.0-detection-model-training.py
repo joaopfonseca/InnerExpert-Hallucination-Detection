@@ -14,12 +14,13 @@ The script supports multiple detection architectures and evaluation metrics.
 """
 
 import argparse
-from pathlib import Path
-from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from pathlib import Path
+from typing import Dict, List, Tuple
 from tqdm.auto import tqdm
+from transformers import AutoTokenizer
 
 try:
     import sys
@@ -28,7 +29,8 @@ except NameError:
     pass
 
 from moeuncert.datasets import fetch_realtimeqa
-from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug
+from moeuncert.experiments import resolve_model_slug, resolve_dataset_slug, read_and_collate_outputs
+
 
 def load_labeled_dataset(
     model_dir: Path,
@@ -76,158 +78,52 @@ def load_labeled_dataset(
     return df
 
 
-def load_model_outputs(
-    output_dir: Path,
-) -> List[Dict]:
-    """
-    Load raw model outputs (.pt files) from 1.0-generate-answers.py.
-    
-    Parameters
-    ----------
-    data_root : Path
-        Root directory containing datasets
-    dataset_slug : str
-        Dataset identifier
-    model_slug : str
-        Model identifier
-    
-    Returns
-    -------
-    List[Dict]
-        List of batch outputs, each containing:
-        - input_ids: (batch_size, seq_len)
-        - hidden_states: (batch_size, seq_len, n_layers, hidden_size)
-        - expert_idx: (batch_size, seq_len, n_layers, top_k)
-        - expert_weights: (batch_size, seq_len, n_layers, top_k)
-        - generated_ids: (batch_size, max_new_tokens)
-    """
-    if not output_dir.exists():
-        raise FileNotFoundError(f"Model outputs directory not found: {output_dir}")
-    
-    # Find all batch output files
-    batch_files = sorted(output_dir.glob("model_outputs__batch_*.pt"))
-    
-    if not batch_files:
-        raise FileNotFoundError(f"No batch output files found in {output_dir}")
-    
-    print(f"Loading {len(batch_files)} batch files from {output_dir}")
-    
-    all_outputs = []
-    for batch_file in tqdm(batch_files, desc="Loading batches"):
-        batch_data = torch.load(batch_file, map_location="cpu")
-        all_outputs.append(batch_data)
-    
-    print(f"  Loaded {len(all_outputs)} batches")
-    
-    return all_outputs
-
-
-def collate_batches(batch_outputs: List[Dict]) -> Dict[str, torch.Tensor]:
-    """
-    Collate batch outputs into single tensors.
-    
-    Parameters
-    ----------
-    batch_outputs : List[Dict]
-        List of batch outputs from load_model_outputs
-    
-    Returns
-    -------
-    Dict[str, torch.Tensor]
-        Collated tensors with batch dimension concatenated:
-        - hidden_states: (total_samples, seq_len, n_layers, hidden_size)
-        - expert_idx: (total_samples, seq_len, n_layers, top_k)
-        - expert_weights: (total_samples, seq_len, n_layers, top_k)
-        - generated_ids: (total_samples, max_new_tokens)
-    """
-    # Determine which keys to collate
-    sample_batch = batch_outputs[0]
-    keys_to_collate = [k for k in sample_batch.keys() if isinstance(sample_batch[k], torch.Tensor)]
-    
-    collated = {}
-    
-    for key in keys_to_collate:
-        tensors = [batch[key] for batch in batch_outputs]
-        
-        # Check if all tensors have the same shape (except batch dimension)
-        shapes = [t.shape[1:] for t in tensors]
-        if len(set(shapes)) > 1:
-            print(f"Warning: {key} has varying shapes across batches, padding...")
-            # Pad to max shape
-            max_shape = tuple(max(s[i] for s in shapes) for i in range(len(shapes[0])))
-            padded_tensors = []
-            for t in tensors:
-                if t.shape[1:] != max_shape:
-                    # Create padded tensor
-                    pad_shape = (t.shape[0],) + max_shape
-                    padded = torch.zeros(pad_shape, dtype=t.dtype, device=t.device)
-                    # Copy original data
-                    slices = (slice(None),) + tuple(slice(0, s) for s in t.shape[1:])
-                    padded[slices] = t
-                    padded_tensors.append(padded)
-                else:
-                    padded_tensors.append(t)
-            tensors = padded_tensors
-        
-        collated[key] = torch.cat(tensors, dim=0)
-    
-    print(f"Collated tensors:")
-    for key, tensor in collated.items():
-        print(f"  {key}: {tensor.shape}")
-    
-    return collated
-
-
 def prepare_training_data(
-    labeled_df: pd.DataFrame,
-    base_outputs: Dict[str, torch.Tensor],
-    evidence_outputs: Dict[str, torch.Tensor],
+    df_labeled: pd.DataFrame,
+    all_outputs: Dict[str, torch.Tensor],
+    tokenizer: AutoTokenizer,
 ) -> Tuple[Dict, Dict]:
     """
-    Prepare training data by combining labels and model internals.
+    Prepare training data by combining per-token labels and per-token model
+    internals.
+    
+    This function creates token-level features and labels by creating binary
+    label masks (0=correct, 1=hallucinated) for each token using the provided
+    hallucinated spans. It then splits the token-level features from the model
+    outputs and aligns them with the token-level labels. 
+
+    The resulting features and labels are concatenated across all samples to create
+    a large token-level dataset for training detection models.
     
     Parameters
     ----------
-    labeled_df : pd.DataFrame
-        Labeled dataset with supervision signals
-    base_outputs : Dict[str, torch.Tensor]
-        Collated outputs from base generation (no evidence)
-    evidence_outputs : Dict[str, torch.Tensor]
-        Collated outputs from evidence generation (RAG)
+    df_labeled : pd.DataFrame
+        Labeled dataset with supervision signals including:
+        - generated_answer: The text generated by the model
+        - llm_hallucinated_spans: Array of hallucinated text spans
+        - evidence_present: Whether evidence was provided (0 or 1)
+    all_outputs : Dict[str, torch.Tensor]
+        Collated outputs from base and evidence generation (no evidence + RAG)
+    tokenizer : AutoTokenizer
+        Tokenizer to use.
     
     Returns
     -------
     Tuple[Dict, Dict]
         (features_dict, labels_dict) where:
-        - features_dict contains all feature tensors
-        - labels_dict contains all supervision signals
+        - features_dict contains per-token feature tensors:
+            - hidden_states: (total_tokens, n_layers, hidden_size)
+            - expert_idx: (total_tokens, n_layers, top_k) 
+            - expert_weights: (total_tokens, n_layers, top_k)
+            - etc.
+        - labels_dict contains per-token labels:
+            - is_hallucinated: (total_tokens,) binary labels
+            - sample_idx: (total_tokens,) which sample each token came from
+            - token_position: (total_tokens,) position within sequence
     """
-    # TODO: Implement feature extraction and alignment
     
-    # For now, just return the raw data
-    features = {
-        "base_hidden_states": base_outputs.get("hidden_states"),
-        "base_expert_idx": base_outputs.get("expert_idx"),
-        "base_expert_weights": base_outputs.get("expert_weights"),
-        "evidence_hidden_states": evidence_outputs.get("hidden_states"),
-        "evidence_expert_idx": evidence_outputs.get("expert_idx"),
-        "evidence_expert_weights": evidence_outputs.get("expert_weights"),
-    }
-    
-    labels = {
-        "hallucination_confidence": labeled_df["label_hallucination_confidence"].values,
-        "weak_hallucination": labeled_df.get("label_weak_hallucination", pd.Series([None] * len(labeled_df))).values,
-    }
-    
-    # Include LLM labels if available
-    if "label_llm_answer" in labeled_df.columns:
-        labels["llm_answer"] = labeled_df["label_llm_answer"].values
-    
-    print(f"Prepared training data:")
-    print(f"  Features: {list(features.keys())}")
-    print(f"  Labels: {list(labels.keys())}")
-    print(f"  Samples: {len(labeled_df)}")
-    
+    # TODO: Implement this function following the steps outlined in the docstring. 
+
     return features, labels
 
 def print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1, random_state: int = 42):
@@ -318,35 +214,44 @@ if __name__ == "__main__":
         args.label_model,
     )
 
-    raise RuntimeError("Checkpoint.")
-
     # Optionally print example samples (useful for reports)
     # print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1)
     
     # Load model outputs for base generation
-    print("\nLoading base generation outputs...")
-    base_batches = load_model_outputs(
-        data_dir / "base_generation"
-    )
-    base_outputs = collate_batches(base_batches)
+    print("\nLoading generated outputs...")
+    base_outputs_dir = data_dir / "base_generation"
+    evidence_outputs_dir = data_dir / "evidence_generation"
+
+    # Find all batch output files
+    batch_files = [
+        *sorted(base_outputs_dir.glob("model_outputs__batch_*.pt")),
+        *sorted(evidence_outputs_dir.glob("model_outputs__batch_*.pt")),
+    ]
     
-    # Load model outputs for evidence generation
-    print("\nLoading evidence generation outputs...")
-    evidence_batches = load_model_outputs(
-        data_dir / "evidence_generation"
-    )
-    evidence_outputs = collate_batches(evidence_batches)
-    
-    print("\n" + "=" * 80)
-    print("PREPARING TRAINING DATA")
-    print("=" * 80)
-    
+    if not batch_files:
+        raise FileNotFoundError(f"No batch output files found in {output_dir}")
+     
+    # Use handle the loading and collation
+    all_outputs = read_and_collate_outputs(batch_files, tokenizer=None, get_keys=None)
+
+    #####################################################################################
+    # Prepare training data
+
+    # Load tokenizer for feature preparation
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+ 
     # Prepare training data
     features, labels = prepare_training_data(
-        labeled_df,
-        base_outputs,
-        evidence_outputs,
+        df_labeled,
+        all_outputs,
+        tokenizer,
     )
+
+
+
+
+    raise RuntimeError("Checkpoint.")
+
     
     print("\n" + "=" * 80)
     print("DATA LOADING COMPLETE")

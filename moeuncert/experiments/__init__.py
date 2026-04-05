@@ -10,7 +10,8 @@ from .paths import (
 )
 from .utils import (
     optimal_threshold,
-    get_quantization_kwargs
+    get_quantization_kwargs,
+    read_and_collate_outputs,
 )
 
 
@@ -23,4 +24,5 @@ __all__ = [
     "build_figures_path",
     "optimal_threshold",
     "get_quantization_kwargs",
+    "read_and_collate_outputs",
 ]
