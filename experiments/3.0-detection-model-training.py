@@ -78,6 +78,136 @@ def load_labeled_dataset(
     return df
 
 
+def _create_token_labels(
+    generated_text: str,
+    hallucinated_spans: np.ndarray,
+    offset_mapping: List[Tuple[int, int]],
+) -> torch.Tensor:
+    """
+    Create binary token labels based on hallucinated text spans.
+    
+    A token is labeled as hallucinated (1) if it overlaps with any 
+    hallucinated span in the text.
+    """
+    n_tokens = len(offset_mapping)
+    token_labels = torch.zeros(n_tokens, dtype=torch.long)
+    
+    if not isinstance(hallucinated_spans, np.ndarray) or len(hallucinated_spans) == 0:
+        return token_labels
+    
+    for span_text in hallucinated_spans:
+        span_start = generated_text.find(span_text)
+        if span_start == -1:
+            continue
+        span_end = span_start + len(span_text)
+        
+        for token_idx, (char_start, char_end) in enumerate(offset_mapping):
+            if char_end > span_start and char_start < span_end:
+                token_labels[token_idx] = 1
+    
+    return token_labels
+
+
+def _find_generation_boundaries(
+    input_ids: torch.Tensor,
+    sequences: torch.Tensor,
+) -> Tuple[int, int]:
+    """
+    Find where the generated answer starts and ends in the sequences tensor.
+    
+    Compares input_ids (prompt) with sequences (prompt + generation) to find
+    where they diverge, which marks the start of generation.
+    
+    Parameters
+    ----------
+    input_ids : torch.Tensor
+        The prompt tokens (may include left-padding)
+    sequences : torch.Tensor
+        The full sequence (prompt + generation + possibly right-padding)
+    
+    Returns
+    -------
+    Tuple[int, int]
+        (gen_start, gen_end) positions in sequences
+    """
+    # Find where actual content starts (after left-padding)
+    pad_token = input_ids[0].item()  # Left-padding token (e.g., 50279)
+    non_pad_mask = input_ids != pad_token
+    input_content_start = (
+        torch.where(non_pad_mask)[0][0].item()
+        if torch.any(non_pad_mask) else len(input_ids)
+    )
+    
+    # Find where actual content ends (before right-padding with 0)
+    non_zero_mask = input_ids != 0
+    input_content_end = (
+        torch.where(non_zero_mask)[0][-1].item() + 1
+        if torch.any(non_zero_mask) else 0
+    )
+    
+    # Find where content starts in sequences
+    seq_non_pad_mask = sequences != pad_token
+    seq_content_start = (
+        torch.where(seq_non_pad_mask)[0][0].item()
+        if torch.any(seq_non_pad_mask) else len(sequences)
+    )
+    
+    # Generation starts after the prompt content
+    content_len = input_content_end - input_content_start
+    gen_start = seq_content_start + content_len
+    
+    # Find where generation ends (first 0 after gen_start, or end of tensor)
+    seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
+    gen_end = (
+        gen_start + seq_zeros[0].item()
+        if len(seq_zeros) > 0 else len(sequences)
+    )
+    
+    return gen_start, gen_end
+
+
+def _extract_token_features(
+    all_outputs: Dict[str, torch.Tensor],
+    tensor_idx: int,
+    gen_start: int,
+    gen_end: int,
+    n_tokens: int,
+) -> Dict[str, torch.Tensor]:
+    """
+    Extract per-token features from model outputs for the generated tokens.
+    
+    Hidden features are shifted by 1 (hidden[i] predicts sequences[i+1]),
+    so we use gen_start-1 to gen_end-1 for hidden state features.
+    """
+    # Hidden features are shifted: hidden[i] predicts sequences[i+1]
+    hidden_start = gen_start - 1
+    hidden_end = gen_end - 1
+    
+    token_features = {}
+    
+    for key, tensor in all_outputs.items():
+        if key == 'question_id':
+            continue
+        elif key == 'sequences':
+            token_features[key] = tensor[tensor_idx, gen_start:gen_end]
+        elif key in ['input_ids', 'scores_entropy']:
+            # Skip - not aligned with generated tokens
+            continue
+        elif key == 'attention_scores':
+            # (n_samples, n_heads, n_heads, seq_len) -> (n_tokens, n_heads*n_heads)
+            attn = tensor[tensor_idx, :, :, hidden_start:hidden_end]
+            attn = attn.permute(2, 0, 1)
+            token_features[key] = attn.reshape(n_tokens, -1)
+        elif key == 'expert_usage':
+            # (n_samples, seq_len, n_layers, n_experts) -> (n_tokens, n_layers*n_experts)
+            usage = tensor[tensor_idx, hidden_start:hidden_end]
+            token_features[key] = usage.reshape(n_tokens, -1)
+        elif tensor.ndim >= 2:
+            token_features[key] = tensor[tensor_idx, hidden_start:hidden_end]
+    
+    return token_features
+
+
 def prepare_training_data(
     df_labeled: pd.DataFrame,
     all_outputs: Dict[str, torch.Tensor],
@@ -117,13 +247,93 @@ def prepare_training_data(
             - expert_weights: (total_tokens, n_layers, top_k)
             - etc.
         - labels_dict contains per-token labels:
-            - is_hallucinated: (total_tokens,) binary labels
+            - hallucination: (total_tokens,) binary labels
             - sample_idx: (total_tokens,) which sample each token came from
             - token_position: (total_tokens,) position within sequence
     """
     
-    # TODO: Implement this function following the steps outlined in the docstring. 
-
+    print("Preparing token-level training data...")
+    print(f"  Labeled samples: {len(df_labeled)}")
+    print(f"  Output keys: {list(all_outputs.keys())}")
+    
+    # Build question_id -> tensor index mapping for safe alignment
+    if 'question_id' not in all_outputs:
+        raise ValueError("all_outputs must contain 'question_id' for alignment")
+    
+    qid_to_idx = {qid.item(): idx for idx, qid in enumerate(all_outputs['question_id'])}
+    
+    features_list = []
+    labels_list = []
+    
+    for _, row in tqdm(df_labeled.iterrows(), total=len(df_labeled), desc="  Processing"):
+        question_id = row['question_id']
+        
+        # Look up the tensor index using question_id
+        if question_id not in qid_to_idx:
+            raise KeyError(f"Question ID {question_id} not found in model outputs.")
+        
+        tensor_idx = qid_to_idx[question_id]
+        generated_text = row['generated_answer']
+        
+        # Tokenize the generated answer with offset mapping for span alignment
+        tokenized = tokenizer(
+            generated_text,
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+        )
+        n_tokens = len(tokenized['input_ids'])
+        
+        # Create token-level labels from hallucinated spans
+        token_labels = _create_token_labels(
+            generated_text,
+            row['llm_hallucinated_spans'],
+            tokenized['offset_mapping'],
+        )
+        
+        # Find where generation starts and ends in the sequences tensor
+        input_ids = all_outputs['input_ids'][tensor_idx]
+        sequences = all_outputs['sequences'][tensor_idx]
+        gen_start, gen_end = _find_generation_boundaries(input_ids, sequences)
+        
+        # Use the smaller of detected generation length and tokenized length
+        gen_len = gen_end - gen_start
+        if gen_len < n_tokens:
+            n_tokens = gen_len
+            token_labels = token_labels[:n_tokens]
+        else:
+            gen_end = gen_start + n_tokens
+        
+        # Extract per-token features
+        token_features = _extract_token_features(
+            all_outputs, tensor_idx,
+            gen_start, gen_end,
+            n_tokens,
+        )
+        
+        # Add metadata
+        token_features['question_id'] = torch.full((n_tokens,), question_id, dtype=torch.long)
+        token_features['token_position'] = torch.arange(n_tokens, dtype=torch.long)
+        token_features['evidence_present'] = torch.full((n_tokens,), row['evidence_present'], dtype=torch.long)
+        
+        features_list.append(token_features)
+        labels_list.append(token_labels)
+     
+    # Concatenate all samples
+    print("  Concatenating all tokens...")
+    features = {}
+    for key in features_list[0].keys():
+        features[key] = torch.cat([f[key] for f in features_list], dim=0)
+    
+    labels = {
+        'hallucination': torch.cat(labels_list, dim=0)
+    }
+    
+    print(f"  Total tokens: {len(labels['hallucination'])}")
+    print(f"  Hallucinated tokens: {labels['hallucination'].sum().item()} ({100 * labels['hallucination'].float().mean().item():.1f}%)")
+    print(f"  Feature shapes:")
+    for key, tensor in features.items():
+        print(f"    {key}: {tensor.shape}")
+    
     return features, labels
 
 def print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1, random_state: int = 42):
