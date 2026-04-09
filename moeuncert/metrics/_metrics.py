@@ -49,7 +49,8 @@ def topk_entropy(scores, k=None, softmax=True):
 
     Args:
         scores: Tensor of output logits with shape (batch_size, sequence_length, vocab_size)
-        k: Number of top tokens to consider for entropy calculation
+        k: Number of top scores to consider for entropy calculation. If None,
+        considers all scores.
 
     Returns:
         Tensor of top-k entropy scores with shape (batch_size, sequence_length)
@@ -189,6 +190,39 @@ def expert_usage_frequency(expert_idx, weights=None):
         expert_usage / expert_usage.sum(-1, keepdim=True)
     )  # normalize by token position
     return expert_usage
+
+
+def expert_usage_gini_impurity(expert_usage):
+    """
+    Compute Gini impurity from expert usage probabilities.
+
+    Args:
+        expert_usage: Tensor of expert usage probabilities with shape
+            (batch_size, sequence_length, n_layers, n_experts)
+
+    Returns:
+        Tensor of Gini impurity scores with shape
+        (batch_size, sequence_length, n_layers)
+    """
+    return 1.0 - torch.sum(expert_usage**2, dim=-1)
+
+
+def inverse_herfindahl_index(expert_usage, eps=1e-10):
+    """
+    Compute number of effective experts from expert usage probabilities.
+
+    This is the inverse Herfindahl index: 1 / sum(p_i^2).
+
+    Args:
+        expert_usage: Tensor of expert usage probabilities with shape
+            (batch_size, sequence_length, n_layers, n_experts)
+        eps: Small constant for numerical stability
+
+    Returns:
+        Tensor of effective-expert counts with shape
+        (batch_size, sequence_length, n_layers)
+    """
+    return 1.0 / torch.sum(expert_usage**2 + eps, dim=-1)
 
 
 def compute_metrics(standardized_outputs):

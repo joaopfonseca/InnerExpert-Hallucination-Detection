@@ -73,14 +73,15 @@ print(
 ###############################################################################
 # Computing monitoring metrics individually
 
-from moeuncert.metrics._metrics import (
+from moeuncert.metrics import (
     hidden_score,
     attention_score,
     topk_entropy,
-    cosine_similarity,
     expert_hidden_score,
     expert_similarity_score,
-    expert_usage_score,
+    expert_usage_frequency,
+    expert_usage_gini_impurity,
+    inverse_herfindahl_index,
 )
 
 # Shape of hidden states: (batch_size, sequence_length, n_layers, hidden_size)
@@ -120,9 +121,14 @@ expert_similarities = expert_similarity_score(
 expert_usage = expert_usage_frequency(outputs["expert_idx"], weights=outputs["expert_weights"])
 
 # Add new metrics to reduce expert usage dimensionality
-# Entropy 
-# Gini 
-# Number of Effective Experts
+# Entropy
+expert_usage_entropy = topk_entropy(expert_usage, softmax=False)
+
+# Gini impurity
+expert_usage_gini = expert_usage_gini_impurity(expert_usage)
+
+# Number of Effective Experts (inverse Herfindahl index)
+expert_usage_effective_experts = inverse_herfindahl_index(expert_usage)
 
 ###############################################################################
 # Visual examples

@@ -5,6 +5,8 @@ from ._metrics import (
     expert_hidden_score,
     expert_similarity_score,
     expert_usage_frequency,
+    expert_usage_gini_impurity,
+    inverse_herfindahl_index,
     compute_metrics,
 )
 
@@ -15,5 +17,7 @@ __all__ = [
     "expert_hidden_score",
     "expert_similarity_score",
     "expert_usage_frequency",
+    "expert_usage_gini_impurity",
+    "inverse_herfindahl_index",
     "compute_metrics",
 ]
