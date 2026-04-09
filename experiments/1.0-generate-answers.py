@@ -40,8 +40,24 @@ from moeuncert.experiments import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size=2, save_path=None):
-    """Run batched generation over a tokenized dataset, returning collated outputs."""
+def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size=2, save_path=None, max_new_tokens=65):
+    """Run batched generation over a tokenized dataset, returning collated outputs.
+    
+    Parameters
+    ----------
+    tokenized_dataset : Dataset
+        Tokenized dataset with input_ids and attention_mask
+    model_monitor : ModelMonitor
+        Model wrapper with generate() method
+    tokenizer : PreTrainedTokenizer
+        Tokenizer for the model
+    batch_size : int
+        Number of samples per batch
+    save_path : Path, optional
+        Directory to save batch outputs
+    max_new_tokens : int
+        Maximum number of new tokens to generate per sample
+    """
     all_outputs = {}
     with torch.no_grad():
         for i in tqdm(list(range(0, len(tokenized_dataset), batch_size))):
@@ -72,7 +88,7 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
             all_outputs["input_ids"].append(input_ids)
             
             batch = move_to_device(batch, device=DEVICE)
-            outputs = model_monitor.generate(**batch)
+            outputs = model_monitor.generate(**batch, max_new_tokens=max_new_tokens)
             del batch
 
             outputs_processed = standardize_outputs(outputs, device="cpu")
@@ -158,6 +174,12 @@ if __name__ == "__main__":
         metavar="MONTH",
         help="Month (1-12). Only valid when a single year is provided.",
     )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=65,
+        help="Maximum number of new tokens to generate per answer (default: 65).",
+    )
     args = parser.parse_args()
 
     print(f"Device set to: {DEVICE}")
@@ -205,7 +227,7 @@ if __name__ == "__main__":
 
     # NOTE: output_router_logits must be False for `generate`; This is a known limitation.
     # See: https://github.com/huggingface/transformers/issues/30731
-    outputs = model_monitor.generate(**inputs, max_new_tokens=65)
+    outputs = model_monitor.generate(**inputs, max_new_tokens=args.max_new_tokens)
     print(tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)[0])
 
     ###############################################################################
@@ -228,7 +250,8 @@ if __name__ == "__main__":
         model_monitor, 
         tokenizer, 
         batch_size, 
-        save_path=base_gen_dir
+        save_path=base_gen_dir,
+        max_new_tokens=args.max_new_tokens,
     )
     print(f"Model outputs saved to {base_gen_dir}")
 
@@ -249,7 +272,8 @@ if __name__ == "__main__":
         model_monitor, 
         tokenizer, 
         batch_size, 
-        save_path=evidence_gen_dir
+        save_path=evidence_gen_dir,
+        max_new_tokens=args.max_new_tokens,
     )
     print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 

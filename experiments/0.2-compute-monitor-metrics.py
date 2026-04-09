@@ -119,6 +119,11 @@ expert_similarities = expert_similarity_score(
 # TODO: check if weighted usage score is more informative than raw frequency
 expert_usage = expert_usage_frequency(outputs["expert_idx"], weights=outputs["expert_weights"])
 
+# Add new metrics to reduce expert usage dimensionality
+# Entropy 
+# Gini 
+# Number of Effective Experts
+
 ###############################################################################
 # Visual examples
 import matplotlib.pyplot as plt

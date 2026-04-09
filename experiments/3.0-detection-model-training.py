@@ -336,6 +336,80 @@ def prepare_training_data(
     
     return features, labels
 
+
+def merge_features(
+    features: Dict[str, torch.Tensor],
+    include_sequences: bool = False,
+    include_metadata: bool = False,
+) -> np.ndarray:
+    """
+    Merge all feature tensors into a single feature matrix.
+    
+    Parameters
+    ----------
+    features : Dict[str, torch.Tensor]
+        Dictionary of feature tensors from prepare_training_data()
+    include_sequences : bool, default=False
+        Whether to include the sequences (token IDs) as a feature
+    include_metadata : bool, default=False
+        Whether to include metadata features (question_id, token_position, evidence_present)
+    
+    Returns
+    -------
+    np.ndarray
+        Feature matrix of shape (n_tokens, n_features)
+    """
+    # Define which features to include
+    numerical_features = [
+        'hidden_scores',
+        'attention_scores',
+        'router_entropy',
+        'expert_hidden_scores',
+        'expert_similarities',
+        'expert_usage',
+    ]
+    
+    metadata_features = [
+        'question_id',
+        'token_position',
+        'evidence_present',
+    ]
+    
+    # Build list of features to merge
+    features_to_merge = []
+    
+    # Add numerical features
+    for key in numerical_features:
+        if key in features:
+            tensor = features[key]
+            # Handle 1D tensors (add dimension)
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(1)
+            features_to_merge.append(tensor)
+    
+    # Optionally add sequences
+    if include_sequences and 'sequences' in features:
+        seq_tensor = features['sequences']
+        if seq_tensor.ndim == 1:
+            seq_tensor = seq_tensor.unsqueeze(1)
+        features_to_merge.append(seq_tensor.float())
+    
+    # Optionally add metadata
+    if include_metadata:
+        for key in metadata_features:
+            if key in features:
+                tensor = features[key]
+                if tensor.ndim == 1:
+                    tensor = tensor.unsqueeze(1)
+                features_to_merge.append(tensor.float())
+    
+    # Concatenate along feature dimension
+    X = torch.cat(features_to_merge, dim=1)
+    
+    # Convert to numpy
+    return X.numpy()
+
+
 def print_example_samples(df_labeled: pd.DataFrame, n_samples: int = 1, random_state: int = 42):
     df_examples = (
         df_labeled
@@ -457,7 +531,25 @@ if __name__ == "__main__":
         tokenizer,
     )
 
-
+    # Merge features into a single matrix
+    print("\nMerging features...")
+    X = merge_features(
+        features,
+        include_sequences=False,  # Token IDs not useful for most models
+        include_metadata=False,   # Keep metadata separate for analysis
+    )
+    y = labels['hallucination'].numpy()
+    
+    print(f"  Feature matrix shape: {X.shape}")
+    print(f"  Label vector shape: {y.shape}")
+    print(f"  Total features: {X.shape[1]}")
+    print(f"    - hidden_scores: 17")
+    print(f"    - attention_scores: 256")
+    print(f"    - router_entropy: 16")
+    print(f"    - expert_hidden_scores: 16")
+    print(f"    - expert_similarities: 16")
+    print(f"    - expert_usage: 1024")
+    print(f"  Hallucination rate: {y.mean():.1%}")
 
 
     raise RuntimeError("Checkpoint.")
