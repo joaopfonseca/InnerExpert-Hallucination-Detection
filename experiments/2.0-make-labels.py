@@ -51,16 +51,18 @@ as scripts 3.0 and 3.1.
 """
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import io
 import json
 import os
 import re
+import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Sequence
+from typing import Dict, List, Optional, Tuple, Sequence
 
 import numpy as np
 import pandas as pd
 from openai import OpenAI
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve
 from sklearn.preprocessing import StandardScaler
@@ -150,41 +152,134 @@ def build_answer_feature_frame(
     return feats, feature_cols
 
 
-def _deepinfra_chat_json(
-    prompt: str, client: OpenAI, model: str
-) -> Optional[dict]:
-    """Call DeepInfra through the OpenAI-compatible client and parse JSON output."""
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "Return concise, valid JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    content = response.choices[0].message.content.strip()
+PROMPT_TEMPLATE = (
+    "Given a question, evidence, and model answer, decide whether the answer contains "
+    "unsupported or hallucinated content.\n"
+    "Return valid JSON only with this exact schema:\n"
+    '{"label": 1 or 0, '
+    '"hallucinated_spans": ["exact substring from answer", ...]}\n'
+    "Rules:\n"
+    "- label = 1 means hallucinated/unsupported, label = 0 means grounded/correct.\n"
+    "- hallucinated_spans must be exact substrings from the answer.\n"
+    "- if label = 0, hallucinated_spans must be an empty list.\n\n"
+    "Question: {question}\n"
+    "Evidence: {evidence}\n"
+    "Answer: {answer}\n"
+)
+
+
+def _build_batch_requests(
+    df: pd.DataFrame,
+    model: str,
+    work_index: List[int],
+) -> List[str]:
+    """Build JSONL lines for the OpenAI Batch API, one per row."""
+    lines = []
+    for idx in work_index:
+        row = df.loc[idx]
+        prompt = PROMPT_TEMPLATE.format(
+            question=row.get("question_sentence", ""),
+            evidence=row.get("evidence", ""),
+            answer=row.get("generated_answer", ""),
+        )
+        request = {
+            "custom_id": f"row-{idx}",
+            "method": "post",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "Return concise, valid JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        }
+        lines.append(json.dumps(request))
+    return lines
+
+
+def _parse_batch_response_line(
+    line: str,
+) -> Tuple[Optional[int], Optional[int], List[str]]:
+    """Parse a single line from a batch result JSONL file.
+
+    Returns (row_index, label, spans) where row_index comes from custom_id,
+    label is 0/1 or None, and spans is a list of hallucinated substring texts.
+    """
+    try:
+        result = json.loads(line)
+    except json.JSONDecodeError:
+        return None, None, []
+
+    custom_id = result.get("custom_id", "")
+    idx_match = re.search(r"row-(\d+)", custom_id)
+    idx = int(idx_match.group(1)) if idx_match else None
+
+    if result.get("error"):
+        return idx, None, []
+
+    response = result.get("response", {})
+    body = response.get("body", {})
+    choices = body.get("choices", [])
+    if not choices:
+        return idx, None, []
+
+    content = choices[0].get("message", {}).get("content", "").strip()
     match = re.search(r"\{.*\}", content, flags=re.DOTALL)
     if not match:
-        return None
+        return idx, None, []
+
     try:
-        return json.loads(match.group(0))
+        obj = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return None
+        return idx, None, []
+
+    label_obj = obj.get("label", None)
+    label: Optional[int] = int(label_obj) if label_obj in (0, 1) else None
+    spans: List[str] = []
+    spans_obj = obj.get("hallucinated_spans", [])
+    if isinstance(spans_obj, list):
+        spans = [str(x) for x in spans_obj if str(x).strip()]
+
+    return idx, label, spans
 
 
 def generate_llm_labels_and_spans(
     df: pd.DataFrame,
-    client: Optional[OpenAI],
-    model: Optional[str],
+    client: OpenAI,
+    model: str,
     max_samples: Optional[int] = None,
+    poll_interval: int = 10,
 ) -> Tuple[pd.Series, Dict[int, List[str]]]:
     """
-    Generate answer-level labels and token-level hallucinated spans in one API call per sample.
+    Generate answer-level labels and token-level hallucinated spans via DeepInfra Batch API.
 
-    Returns:
-        labels: series with 1 (hallucinated), 0 (grounded), or NaN when unavailable
-        spans_by_row: mapping from row index to extracted hallucinated spans
+    Instead of making one API call per sample sequentially, this submits all requests
+    as a single batch job, polls until completion, and parses the results. This is
+    dramatically faster for large datasets since all requests are processed in parallel
+    on the server side.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame with columns question_sentence, evidence, generated_answer.
+    client : OpenAI
+        OpenAI client configured with DeepInfra base_url and api_key.
+    model : str
+        Model name on DeepInfra (e.g. "zai-org/GLM-5.1").
+    max_samples : int, optional
+        Maximum number of rows to label. None means all rows.
+    poll_interval : int
+        Seconds to wait between batch status checks (default: 10).
+
+    Returns
+    -------
+    labels : pd.Series
+        Series with 1 (hallucinated), 0 (grounded), or NaN when unavailable.
+    spans_by_row : dict
+        Mapping from row index to list of hallucinated span strings.
     """
     labels = pd.Series(np.nan, index=df.index, dtype=float)
     spans_by_row: Dict[int, List[str]] = {}
@@ -193,49 +288,66 @@ def generate_llm_labels_and_spans(
         return labels, spans_by_row
 
     work_index = list(df.index)[:max_samples] if max_samples is not None else list(df.index)
-    workers = 1  # max(1, os.cpu_count() or 1)
+    if not work_index:
+        return labels, spans_by_row
 
-    def _label_one(idx: int) -> Tuple[int, Optional[int], List[str]]:
-        row = df.loc[idx]
-        prompt = (
-            "Given a question, evidence, and model answer, decide whether the answer contains "
-            "unsupported or hallucinated content.\n"
-            "Return valid JSON only with this exact schema:\n"
-            "{\"label\": 1 or 0, "
-            "\"hallucinated_spans\": [\"exact substring from answer\", ...]}\n"
-            "Rules:\n"
-            "- label = 1 means hallucinated/unsupported, label = 0 means grounded/correct.\n"
-            "- hallucinated_spans must be exact substrings from the answer.\n"
-            "- if label = 0, hallucinated_spans must be an empty list.\n\n"
-            f"Question: {row.get('question_sentence', '')}\n"
-            f"Evidence: {row.get('evidence', '')}\n"
-            f"Answer: {row.get('generated_answer', '')}\n"
-        )
+    print(f"Submitting batch of {len(work_index)} requests to DeepInfra...")
 
-        obj = _deepinfra_chat_json(prompt, client=client, model=model)
-        if not obj:
-            return idx, None, []
+    # Build batch request JSONL
+    request_lines = _build_batch_requests(df, model, work_index)
+    batch_file_content = "\n".join(request_lines)
 
-        label_obj = obj.get("label", None)
-        label: Optional[int] = int(label_obj) if label_obj in (0, 1) else None
-        spans: List[str] = []
-        spans_obj = obj.get("hallucinated_spans", [])
-        if isinstance(spans_obj, list):
-            spans = [str(x) for x in spans_obj if str(x).strip()]
-        return idx, label, spans
+    # Upload the request file
+    uploaded_file = client.files.create(
+        file=io.BytesIO(batch_file_content.encode("utf-8")),
+        purpose="batch",
+    )
+    print(f"  Uploaded request file: {uploaded_file.id}")
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_label_one, idx) for idx in work_index]
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc=f"LLM labeling ({workers} threads)",
-        ):
-            idx, label, spans = future.result()
+    # Create the batch job
+    batch = client.batches.create(
+        input_file_id=uploaded_file.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
+    print(f"  Created batch job: {batch.id}")
+
+    # Poll until completed, in_progress, failed, expired, or cancelled
+    status = batch.status
+    while status not in ("completed", "failed", "expired", "cancelled"):
+        time.sleep(poll_interval)
+        batch = client.batches.retrieve(batch.id)
+        status = batch.status
+        completed = getattr(batch, "request_counts", None)
+        total = len(work_index)
+        done = completed.completed if completed else "?"
+        failed = completed.failed if completed else "?"
+        print(f"  Batch {batch.id}: status={status}, completed={done}, failed={failed}, total={total}")
+
+    if status != "completed":
+        print(f"  Batch {batch.id} ended with status: {status}")
+        if hasattr(batch, "error_file_id") and batch.error_file_id:
+            error_content = client.files.content(batch.error_file_id).text
+            print(f"  Errors:\n{error_content[:500]}")
+        return labels, spans_by_row
+
+    print(f"  Batch {batch.id} completed. Downloading results...")
+
+    # Download and parse results
+    output_content = client.files.content(batch.output_file_id).text
+    n_parsed = 0
+    for line in output_content.strip().split("\n"):
+        if not line.strip():
+            continue
+        idx, label, spans = _parse_batch_response_line(line)
+        if idx is not None and idx in labels.index:
             if label is not None:
                 labels.loc[idx] = label
             if spans:
                 spans_by_row[idx] = spans
+            n_parsed += 1
+
+    print(f"  Parsed {n_parsed}/{len(work_index)} results successfully.")
 
     return labels, spans_by_row
 
@@ -284,8 +396,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--deepinfra-model",
         type=str,
-        default="glm-5.1",
-        help="Optional DeepInfra model used for LLM-based labels (e.g. glm-5.1).",
+        default="zai-org/GLM-5.1",
+        help="Optional DeepInfra model used for LLM-based labels (e.g. zai-org/GLM-5.1).",
     )
     parser.add_argument(
         "--max-llm-answer-samples",
@@ -303,6 +415,12 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Maximum rows to query for token-level LLM spans (optional, after answer pass).",
+    )
+    parser.add_argument(
+        "--llm-poll-interval",
+        type=int,
+        default=10,
+        help="Seconds to wait between batch status checks (default: 10).",
     )
     parser.add_argument(
         "--min-llm-train-samples",
@@ -359,6 +477,7 @@ if __name__ == "__main__":
         client=llm_client,
         model=args.deepinfra_model,
         max_samples=args.max_llm_answer_samples,
+        poll_interval=args.llm_poll_interval,
     )
     df["label_llm_answer"] = llm_labels
     df["llm_hallucinated_spans"] = df.index.map(llm_spans)
@@ -375,8 +494,9 @@ if __name__ == "__main__":
     X_all_scaled = scaler.transform(X_all)
 
     clf = LogisticRegression(max_iter=1000)
-    clf.fit(X_train_scaled, y_train)
-    hallucination_confidence = clf.predict_proba(X_all_scaled)[:, 1]
+    calibrated_clf = CalibratedClassifierCV(clf, method="sigmoid", cv=5)
+    calibrated_clf.fit(X_train_scaled, y_train)
+    hallucination_confidence = calibrated_clf.predict_proba(X_all_scaled)[:, 1]
 
     df["label_hallucination_confidence"] = hallucination_confidence
 

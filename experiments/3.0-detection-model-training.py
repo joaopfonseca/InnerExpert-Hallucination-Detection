@@ -73,7 +73,7 @@ def load_labeled_dataset(
     """
     
     if label_model:
-        parquet_path = model_dir / f"results_labeled_{label_model}.parquet"
+        parquet_path = model_dir / f"results_labeled_{resolve_model_slug(label_model)}.parquet"
     else:
         parquet_path = model_dir / "results.parquet"
     
@@ -475,8 +475,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label-model",
         type=str,
-        default="glm-5.1",
-        help="Label model name (e.g., 'glm-5.1' for results_labeled_glm-5.1.parquet)"
+        default="zai-org/GLM-5.1",
+        help="Label model name (e.g., 'zai-org/GLM-5.1' for results_labeled_zai-org__GLM-5.1.parquet)"
     )
     parser.add_argument(
         "--data-root",
