@@ -14,13 +14,23 @@ The script supports multiple detection architectures and evaluation metrics.
 """
 
 import argparse
+import inspect
 import numpy as np
 import pandas as pd
 import torch
 from pathlib import Path
 from typing import Dict, List, Tuple
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, classification_report, f1_score, roc_auc_score
+from sklearn.model_selection import GridSearchCV, GroupKFold, GroupShuffleSplit
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
+from xgboost import XGBClassifier
 
 try:
     import sys
@@ -264,6 +274,7 @@ def prepare_training_data(
     
     features_list = []
     labels_list = []
+    confidence_list = []
     
     for _, row in tqdm(df_labeled.iterrows(), total=len(df_labeled), desc="  Processing"):
         question_id = row['question_id']
@@ -317,6 +328,9 @@ def prepare_training_data(
         
         features_list.append(token_features)
         labels_list.append(token_labels)
+        confidence_list.append(
+            torch.full((n_tokens,), row['label_hallucination_confidence'], dtype=torch.float)
+        )
      
     # Concatenate all samples
     print("  Concatenating all tokens...")
@@ -325,12 +339,13 @@ def prepare_training_data(
         features[key] = torch.cat([f[key] for f in features_list], dim=0)
     
     labels = {
-        'hallucination': torch.cat(labels_list, dim=0)
+        'hallucination': torch.cat(labels_list, dim=0),
     }
+    labels['confidence'] = torch.cat(confidence_list, dim=0) * labels['hallucination']
     
     print(f"  Total tokens: {len(labels['hallucination'])}")
     print(f"  Hallucinated tokens: {labels['hallucination'].sum().item()} ({100 * labels['hallucination'].float().mean().item():.1f}%)")
-    print(f"  Feature shapes:")
+    print("  Feature shapes:")
     for key, tensor in features.items():
         print(f"    {key}: {tensor.shape}")
     
@@ -539,31 +554,187 @@ if __name__ == "__main__":
         include_metadata=False,   # Keep metadata separate for analysis
     )
     y = labels['hallucination'].numpy()
+    y_confidence = labels['confidence'].numpy()
     
+    # Use question_id for train/val split to avoid leakage
+    question_ids = features['question_id'].numpy()
+
+    # Grouped train/test split by question_id (prevents token leakage across splits)
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.10, random_state=42)
+    train_idx, test_idx = next(splitter.split(X, y, groups=question_ids))
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    question_ids_train = question_ids[train_idx]
+    question_ids_test = question_ids[test_idx]
+    
+    y_confidence_train = y_confidence[train_idx]
+    group_kfold = GroupKFold(n_splits=5)
+
+    _clean_inf = FunctionTransformer(lambda X: np.where(np.isfinite(X), X, np.nan))
+    _imputer = SimpleImputer(strategy="median")
+
+    model_configs = {
+        "LogisticRegression": {
+            "pipeline": Pipeline([
+                ("clean_inf", _clean_inf),
+                ("imputer", _imputer),
+                ("scaler", StandardScaler()),
+                ("clf", LogisticRegression(max_iter=2000, random_state=args.seed, l1_ratio=0.0)),
+            ]),
+            "param_grid": {
+                "clf__C": [0.01, 0.1, 1.0, 10.0],
+            },
+        },
+        "RandomForest": {
+            "pipeline": Pipeline([
+                ("clean_inf", _clean_inf),
+                ("imputer", _imputer),
+                ("scaler", StandardScaler()),
+                ("clf", RandomForestClassifier(random_state=args.seed, n_jobs=-1)),
+            ]),
+            "param_grid": {
+                "clf__n_estimators": [100, 300],
+                "clf__max_depth": [10, 20, None],
+                "clf__min_samples_leaf": [1, 5],
+            },
+        },
+        "XGBoost": {
+            "pipeline": Pipeline([
+                ("clean_inf", _clean_inf),
+                ("imputer", _imputer),
+                ("scaler", StandardScaler()),
+                ("clf", XGBClassifier(
+                    random_state=args.seed,
+                    n_jobs=-1,
+                    eval_metric="logloss",
+                    verbosity=0,
+                )),
+            ]),
+            "param_grid": {
+                "clf__n_estimators": [100, 300],
+                "clf__max_depth": [3, 6, 10],
+                "clf__learning_rate": [0.01, 0.1, 0.3],
+            },
+        },
+        "MLP": {
+            "pipeline": Pipeline([
+                ("clean_inf", _clean_inf),
+                ("imputer", _imputer),
+                ("scaler", StandardScaler()),
+                ("clf", MLPClassifier(random_state=args.seed, early_stopping=True)),
+            ]),
+            "param_grid": {
+                "clf__hidden_layer_sizes": [(128,), (256, 128), (128, 64)],
+                "clf__alpha": [1e-4, 1e-3, 1e-2],
+                "clf__learning_rate_init": [1e-3, 1e-4],
+            },
+        },
+    }
+
+    print("\n" + "=" * 70)
+    print("BINARY CLASSIFICATION (target: y, grouped k-fold CV)")
+    print("=" * 70)
+
+    binary_results = {}
+    for name, config in model_configs.items():
+        print(f"\n--- {name} ---")
+        search = GridSearchCV(
+            config["pipeline"],
+            config["param_grid"],
+            cv=group_kfold.split(X_train, y_train, groups=question_ids_train),
+            scoring="f1",
+            n_jobs=-1,
+            verbose=0,
+        )
+        search.fit(X_train, y_train)
+        best = search.best_estimator_
+        y_pred_proba = best.predict_proba(X_test)[:, 1]
+        y_pred = best.predict(X_test)
+        fscore = f1_score(y_test, y_pred)
+        ap = average_precision_score(y_test, y_pred_proba)
+        print(f"  Best params: {search.best_params_}")
+        print(f"  Best CV F1: {search.best_score_:.4f}")
+        print(f"  Test F1: {fscore:.4f}")
+        print(f"  Test AP: {ap:.4f}")
+        print(classification_report(y_test, y_pred, digits=4, zero_division=0))
+        binary_results[name] = {
+            "model": best,
+            "fscore": fscore,
+            "ap": ap,
+            "y_pred_proba": y_pred_proba,
+        }
+
+    print("\n" + "=" * 70)
+    print("CONFIDENCE-WEIGHTED CLASSIFICATION (sample_weight from hallucination confidence)")
+    print("=" * 70)
+
+    sw_train = np.where(y_train == 1, y_confidence_train, 1.0 - y_confidence_train)
+    sw_train = np.clip(sw_train, 1e-6, None)
+
+    weighted_results = {}
+    for name, config in model_configs.items():
+        print(f"\n--- {name} (confidence-weighted) ---")
+
+        pipeline = config["pipeline"]
+        supports_sample_weight = hasattr(pipeline.named_steps["clf"], "fit")
+        if supports_sample_weight:
+            fit_params = inspect.signature(pipeline.named_steps["clf"].fit).parameters
+            supports_sample_weight = "sample_weight" in fit_params
+
+        search = GridSearchCV(
+            pipeline,
+            config["param_grid"],
+            cv=group_kfold.split(X_train, y_train, groups=question_ids_train),
+            scoring="f1",
+            n_jobs=-1,
+            verbose=0,
+        )
+
+        if supports_sample_weight:
+            search.fit(X_train, y_train, clf__sample_weight=sw_train)
+        else:
+            print("  (model does not support sample_weight; training unweighted)")
+            search.fit(X_train, y_train)
+
+        best = search.best_estimator_
+        y_pred_proba = best.predict_proba(X_test)[:, 1]
+        y_pred = best.predict(X_test)
+        fscore = f1_score(y_test, y_pred)
+        ap = average_precision_score(y_test, y_pred_proba)
+        print(f"  Best params: {search.best_params_}")
+        print(f"  Best CV F1: {search.best_score_:.4f}")
+        print(f"  Test F1: {fscore:.4f}")
+        print(f"  Test AP: {ap:.4f}")
+        print(classification_report(y_test, y_pred, digits=4, zero_division=0))
+        weighted_results[name] = {
+            "model": best,
+            "fscore": fscore,
+            "ap": ap,
+            "y_pred_proba": y_pred_proba,
+        }
+
+    print("\n" + "=" * 70)
+    print("SUMMARY: Binary vs Confidence-Weighted")
+    print("=" * 70)
+    print(f"{'Model':<20} {'Binary F1':>12} {'Weighted F1':>14} {'Binary AP':>12} {'Weighted AP':>14}")
+    print("-" * 72)
+    for name in model_configs:
+        b = binary_results[name]
+        w = weighted_results[name]
+        print(f"{name:<20} {b['fscore']:>12.4f} {w['fscore']:>14.4f} {b['ap']:>12.4f} {w['ap']:>14.4f}")
+
     print(f"  Feature matrix shape: {X.shape}")
     print(f"  Label vector shape: {y.shape}")
+    print(f"  Train shape: {X_train.shape}")
+    print(f"  Test shape: {X_test.shape}")
+    print(f"  Train question_ids: {len(np.unique(question_ids_train))}")
+    print(f"  Test question_ids: {len(np.unique(question_ids_test))}")
     print(f"  Total features: {X.shape[1]}")
-    print(f"    - hidden_scores: 17")
-    print(f"    - attention_scores: 256")
-    print(f"    - router_entropy: 16")
-    print(f"    - expert_hidden_scores: 16")
-    print(f"    - expert_similarities: 16")
-    print(f"    - expert_usage: 1024")
+    print("    - hidden_scores: 17")
+    print("    - attention_scores: 256")
+    print("    - router_entropy: 16")
+    print("    - expert_hidden_scores: 16")
+    print("    - expert_similarities: 16")
+    print("    - expert_usage: 1024")
     print(f"  Hallucination rate: {y.mean():.1%}")
-
-
-    raise RuntimeError("Checkpoint.")
-
-    
-    print("\n" + "=" * 80)
-    print("DATA LOADING COMPLETE")
-    print("=" * 80)
-    print(f"Ready to train {args.detector_type} detector")
-    print(f"Features: {list(features.keys())}")
-    print(f"Labels: {list(labels.keys())}")
-    print(f"Total samples: {len(labeled_df)}")
-    print(f"Training samples: {int(len(labeled_df) * args.train_split)}")
-    print(f"Validation samples: {len(labeled_df) - int(len(labeled_df) * args.train_split)}")
-    
-    # TODO: Implement model training
-    print("\n[TODO] Model training not yet implemented")
+ 

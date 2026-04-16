@@ -275,9 +275,18 @@ def compute_metrics(standardized_outputs):
     if "expert_idx" in standardized_outputs:
         # Check usage frequency of each expert
         metrics["expert_usage"] = expert_usage_frequency(
-            standardized_outputs[
-                "expert_idx"
-            ]  # [:, standardized_outputs["input_ids"].shape[-1]:]
+            standardized_outputs["expert_idx"],
+            weights=standardized_outputs["expert_weights"],
+            # [:, standardized_outputs["input_ids"].shape[-1]:]
+        )
+        metrics["expert_usage_entropy"] = topk_entropy(
+            metrics["expert_usage"], softmax=False
+        )
+        metrics["expert_usage_gini"] = expert_usage_gini_impurity(
+            metrics["expert_usage"]
+        )
+        metrics["expert_usage_effective_experts"] = inverse_herfindahl_index(
+            metrics["expert_usage"]
         )
 
     return metrics
