@@ -234,8 +234,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label-model",
         type=str,
-        default="gemma3-1b",
-        help="Label model identifier (default: gemma3-1b)",
+        default="glm-5.1",
+        help="Label model identifier (default: glm-5.1)",
     )
     parser.add_argument(
         "--analysis",

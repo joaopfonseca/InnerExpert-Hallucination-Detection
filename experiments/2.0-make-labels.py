@@ -13,7 +13,7 @@ Answer-level labeling combines:
 - BERTScore metrics (`bert_precision`, `bert_recall`, `bert_f1`)
 - ROUGE metrics (`rouge1`, `rouge2`, `rougeL`, `rougeLsum`)
 - BLEU
-- Optional LLM-based evaluation through Ollama
+- Optional LLM-based evaluation through DeepInfra
 
 For each non-binary metric, thresholds are estimated from base vs RAG
 separability (same principle used in `3.1-analyze-metrics.py`, via ROC-derived
@@ -30,7 +30,7 @@ Token-level labels
 Token-level labels are stored as masks aligned with answer tokens
 (`1 = hallucinated`, `0 = grounded`). Two modes are supported:
 
-- Optional LLM-extracted hallucinated spans (Ollama)
+- Optional LLM-extracted hallucinated spans (DeepInfra)
 - Deterministic lexical-support heuristic fallback using evidence/reference text
 
 If LLM spans are requested but unusable for a sample, the script automatically
@@ -60,7 +60,7 @@ from typing import Dict, Iterable, List, Optional, Tuple, Sequence
 
 import numpy as np
 import pandas as pd
-from ollama import Client
+from openai import OpenAI
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve
 from sklearn.preprocessing import StandardScaler
@@ -150,20 +150,20 @@ def build_answer_feature_frame(
     return feats, feature_cols
 
 
-def _ollama_chat_json(
-    prompt: str, ollama_client: Client, model: str
+def _deepinfra_chat_json(
+    prompt: str, client: OpenAI, model: str
 ) -> Optional[dict]:
-    """Call Ollama through the ollama-python client and parse JSON output."""
-    response = ollama_client.chat(
+    """Call DeepInfra through the OpenAI-compatible client and parse JSON output."""
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": "Return concise, valid JSON only."},
             {"role": "user", "content": prompt},
         ],
-        options={"temperature": 0},
-        format="json",
+        temperature=0,
+        response_format={"type": "json_object"},
     )
-    content = response.get("message", {}).get("content", "").strip()
+    content = response.choices[0].message.content.strip()
     match = re.search(r"\{.*\}", content, flags=re.DOTALL)
     if not match:
         return None
@@ -175,7 +175,7 @@ def _ollama_chat_json(
 
 def generate_llm_labels_and_spans(
     df: pd.DataFrame,
-    ollama_client: Optional[Client],
+    client: Optional[OpenAI],
     model: Optional[str],
     max_samples: Optional[int] = None,
 ) -> Tuple[pd.Series, Dict[int, List[str]]]:
@@ -189,7 +189,7 @@ def generate_llm_labels_and_spans(
     labels = pd.Series(np.nan, index=df.index, dtype=float)
     spans_by_row: Dict[int, List[str]] = {}
 
-    if ollama_client is None or not model:
+    if client is None or not model:
         return labels, spans_by_row
 
     work_index = list(df.index)[:max_samples] if max_samples is not None else list(df.index)
@@ -212,7 +212,7 @@ def generate_llm_labels_and_spans(
             f"Answer: {row.get('generated_answer', '')}\n"
         )
 
-        obj = _ollama_chat_json(prompt, ollama_client=ollama_client, model=model)
+        obj = _deepinfra_chat_json(prompt, client=client, model=model)
         if not obj:
             return idx, None, []
 
@@ -241,6 +241,9 @@ def generate_llm_labels_and_spans(
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Create answer-level and token-level hallucination labels."
     )
@@ -279,16 +282,10 @@ if __name__ == "__main__":
         help="Threshold for converting hallucination confidence into binary answer label.",
     )
     parser.add_argument(
-        "--ollama-host",
+        "--deepinfra-model",
         type=str,
-        default=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-        help="Ollama host URL (default: http://localhost:11434 or OLLAMA_HOST env var).",
-    )
-    parser.add_argument(
-        "--ollama-model",
-        type=str,
-        default="gemma3:1b", # "kimi-k2.5:cloud",
-        help="Optional Ollama model used for LLM-based labels (e.g. llama3.1:8b).",
+        default="glm-5.1",
+        help="Optional DeepInfra model used for LLM-based labels (e.g. glm-5.1).",
     )
     parser.add_argument(
         "--max-llm-answer-samples",
@@ -297,9 +294,9 @@ if __name__ == "__main__":
         help="Maximum rows to query for answer-level LLM labels (optional).",
     )
     parser.add_argument(
-        "--use-ollama-token-labels",
+        "--use-llm-token-labels",
         action="store_true",
-        help="If set, request token-level hallucinated spans from Ollama for hallucinated answers.",
+        help="If set, request token-level hallucinated spans from the LLM for hallucinated answers.",
     )
     parser.add_argument(
         "--max-llm-token-samples",
@@ -315,7 +312,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    ollama_client = Client(host=args.ollama_host) if args.ollama_model else None
+    api_key = os.getenv("DEEPINFRA_API_KEY")
+    llm_client = OpenAI(
+        base_url="https://api.deepinfra.com/v1/openai",
+        api_key=api_key,
+    ) if api_key and args.deepinfra_model else None
 
     model_slug = resolve_model_slug(args.model)
     _, _, dataset_slug = resolve_dataset_slug(args.years, args.month)
@@ -325,11 +326,11 @@ if __name__ == "__main__":
 
     # Include LLM labeler model name in output filename
     output_filename = args.output_file
-    if args.ollama_model:
-        ollama_slug = args.ollama_model.replace(":", "-").replace("/", "__")
+    if args.deepinfra_model:
+        model_slug_label = args.deepinfra_model.replace("/", "__")
         stem = Path(output_filename).stem
         suffix = Path(output_filename).suffix
-        output_filename = f"{stem}_{ollama_slug}{suffix}"
+        output_filename = f"{stem}_{model_slug_label}{suffix}"
 
     output_path = data_dir / output_filename
 
@@ -355,8 +356,8 @@ if __name__ == "__main__":
 
     llm_labels, llm_spans = generate_llm_labels_and_spans(
         df,
-        ollama_client=ollama_client,
-        model=args.ollama_model,
+        client=llm_client,
+        model=args.deepinfra_model,
         max_samples=args.max_llm_answer_samples,
     )
     df["label_llm_answer"] = llm_labels

@@ -475,8 +475,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label-model",
         type=str,
-        default="gemma3-1b",
-        help="Label model name (e.g., 'gemma3-1b' for results_labeled_gemma3-1b.parquet)"
+        default="glm-5.1",
+        help="Label model name (e.g., 'glm-5.1' for results_labeled_glm-5.1.parquet)"
     )
     parser.add_argument(
         "--data-root",
