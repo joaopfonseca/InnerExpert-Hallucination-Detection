@@ -1,7 +1,7 @@
 import torch
 
 
-def hidden_score(hidden_states, alpha=0.001, cumulative=False):
+def hidden_score(hidden_states, alpha=0.001, cumulative=True):
     """
     Compute hidden state scores based on the LLM-Check method.
 
@@ -25,10 +25,10 @@ def hidden_score(hidden_states, alpha=0.001, cumulative=False):
             (batch_size, sequence_length, n_layers, hidden_size)
         alpha: Regularization parameter added to the covariance diagonal.
             Defaults to 0.001, matching the LLM-Check codebase.
-        cumulative: If True, compute scores cumulatively — at each step t,
+        cumulative: If True (default), compute scores cumulatively — at each step t,
             the score uses tokens [0..t]. This is slower (O(seq_len) SVDs
             per layer) but provides a per-token signal for tracking how
-            the representation evolves. If False (default), compute one
+            the representation evolves. If False, compute one
             score per layer over the full sequence — much faster.
 
     Returns:
