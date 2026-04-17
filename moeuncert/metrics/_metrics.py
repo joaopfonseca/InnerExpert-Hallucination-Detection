@@ -43,7 +43,6 @@ def hidden_score(hidden_states, alpha=0.001):
     # H is (B*L, seq_len, d) → H_t is (B*L, d, seq_len)
     H_t = H.transpose(-2, -1)
 
-    # Σ = H_tᵀ J H_t = H @ J @ H_t ... no.
     # H_t is (B*L, d, m). J is (d, d).
     # J H_t → (B*L, d, m). Then H_tᵀ (J H_t) → (B*L, m, m)
     JH = torch.bmm(J.unsqueeze(0).expand(H_t.shape[0], -1, -1), H_t)  # (B*L, d, m)
@@ -63,13 +62,19 @@ def attention_score(attentions):
     Compute attention scores based on the LLM-Check method.
 
     For each attention head, computes the log of the diagonal entries of the
-    attention kernel similarity map (Ker[j,j]). Per the paper, the eigenvalues
-    of the lower-triangular attention kernel are exactly the diagonal entries,
-    so no SVD is needed.
+    attention kernel similarity map. Per the paper, the eigenvalues of the
+    lower-triangular attention kernel are exactly the diagonal entries, so
+    the log-determinant is:
 
-    The paper aggregates these into a single scalar per layer by averaging
-    across heads and positions. Here we preserve per-head and per-token
-    granularity for token-level hallucination detection.
+        log det(Ker_i) = Σ_{j=1}^{m} log Ker_i[j,j]
+
+    We compute this cumulatively so that the score at position t represents
+    the running log-determinant up to that token. This preserves per-token
+    granularity while matching the paper's formula.
+
+    The paper aggregates these into a single scalar per layer by summing
+    across heads and averaging over positions. Here we keep per-head and
+    per-token granularity for token-level hallucination detection.
 
     Args:
         attentions: Tensor of attention matrices with shape
@@ -78,7 +83,7 @@ def attention_score(attentions):
     Returns:
         Tensor of attention scores with shape (batch_size, num_layers, num_heads, seq_length)
     """
-    return torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10)
+    return torch.cumsum(torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10), dim=-1)
 
 
 def topk_entropy(scores, k=None, softmax=True):
