@@ -9,8 +9,10 @@ Each baseline follows a scikit-learn-style API with three core methods:
 
 from ._base import BaseBaseline
 from .predictive_entropy import PredictiveEntropy
+from .llm_check import LLMCheck
 
 __all__ = [
     "BaseBaseline",
     "PredictiveEntropy",
+    "LLMCheck",
 ]
