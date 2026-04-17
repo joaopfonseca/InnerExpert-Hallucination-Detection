@@ -6,17 +6,18 @@ def hidden_score(hidden_states, alpha=0.001):
     Compute hidden state scores based on the LLM-Check method.
 
     Computes the mean log-determinant of the centered covariance matrix of
-    hidden states, following the LLM-Check paper (Sriramanan et al., NeurIPS
-    2024): Σ² = HᵀH where H is (d × m), giving a (m × m) token covariance.
+    hidden states, following the LLM-Check implementation (Sriramanan et al.,
+    NeurIPS 2024).
 
-    The paper defines the Hidden Score as: (2/m) Σ log σᵢ. The official
-    implementation adds data centering (J = I - (1/m)11ᵀ) and αI
-    regularization, which improves numerical stability and discriminative
-    power. We follow the implementation.
+    The paper defines: Σ² = HᵀH where H is (d × m), giving (m × m) token covariance.
+    The implementation adds centering over the hidden dimension (J = I - (1/d) 11ᵀ)
+    and αI regularization: Σ = Hᵀ J H + αI.
+
+    The centering is over hidden features (J is d×d), which is different from
+    centering over tokens. This matches the official codebase's centered_svd_val().
 
     Note: The paper explicitly contrasts this with INSIDE (Chen et al., 2024),
     which computes a centered covariance across *multiple model responses*.
-    Here, centering is applied within a single response's hidden states.
 
     Args:
         hidden_states: Tensor of hidden states with shape
@@ -30,20 +31,28 @@ def hidden_score(hidden_states, alpha=0.001):
     hidden_states = hidden_states.to(torch.float32)
     batch_size, seq_len, n_layers, hidden_size = hidden_states.shape
 
-    # Reshape to (B*L, seq_len, hidden_size) for batched ops
+    # Reshape to merge batch and layers: (B*L, seq_len, hidden_size)
     H = hidden_states.permute(0, 2, 1, 3).reshape(-1, seq_len, hidden_size)
 
-    # Center the data: subtract mean along token dimension
-    H_mean = H.mean(dim=1, keepdim=True)  # (B*L, 1, hidden_size)
-    H_centered = H - H_mean  # (B*L, seq_len, hidden_size)
+    # Centering matrix over hidden dimension: J = I - (1/d) 11ᵀ, shape (d, d)
+    J = torch.eye(hidden_size, device=H.device) - (1.0 / hidden_size) * torch.ones(
+        hidden_size, hidden_size, device=H.device
+    )
 
-    # Token covariance: H_centered @ H_centeredᵀ → (B*L, seq_len, seq_len)
-    Sigma = torch.bmm(H_centered, H_centered.transpose(-2, -1))  # (B*L, m, m)
+    # Transpose H to (d, m) per the paper's convention, then: Σ = Hᵀ J H + αI → (m, m)
+    # H is (B*L, seq_len, d) → H_t is (B*L, d, seq_len)
+    H_t = H.transpose(-2, -1)
+
+    # Σ = H_tᵀ J H_t = H @ J @ H_t ... no.
+    # H_t is (B*L, d, m). J is (d, d).
+    # J H_t → (B*L, d, m). Then H_tᵀ (J H_t) → (B*L, m, m)
+    JH = torch.bmm(J.unsqueeze(0).expand(H_t.shape[0], -1, -1), H_t)  # (B*L, d, m)
+    Sigma = torch.bmm(H_t.transpose(-2, -1), JH)  # (B*L, m, m)
     Sigma = Sigma + alpha * torch.eye(seq_len, device=Sigma.device).unsqueeze(0)
 
-    singular_values = torch.linalg.svdvals(Sigma)  # (B*L, seq_len)
-    score = 2 * torch.cumsum(torch.log(singular_values), dim=-1)  # (B*L, seq_len)
-    score /= torch.arange(1, score.shape[-1] + 1, device=score.device)  # mean
+    singular_values = torch.linalg.svdvals(Sigma)  # (B*L, m)
+    score = torch.cumsum(torch.log(singular_values), dim=-1)  # (B*L, m)
+    score /= torch.arange(1, score.shape[-1] + 1, device=score.device)  # normalize by position
 
     score = score.reshape(batch_size, seq_len, n_layers)
     return score
