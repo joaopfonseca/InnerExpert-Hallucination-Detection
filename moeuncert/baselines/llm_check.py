@@ -19,21 +19,22 @@ class LLMCheck(BaseBaseline):
     """
     LLM-Check baseline for hallucination detection.
 
-    Implements the LLM-Check scoring suite as individual, independent scores:
-    - Attention Score (default): sum of mean log-diagonal of attention kernel maps
-    - Hidden Score: mean log of singular values of centered token covariance
+    Implements the LLM-Check scoring suite as individual, independent scores,
+    computed at per-token granularity:
+    - Attention Score (default): cumulative log-diagonal of attention kernel maps
+    - Hidden Score: cumulative mean log of singular values of centered token covariance
     - Perplexity: token-level perplexity
     - Logit Entropy: entropy of the output token distribution
 
-    Per the paper, each score is evaluated independently — the authors found
-    the Attention Score to be the strongest and most efficient signal.
+    Per the paper, each score is evaluated independently. The attention score is
+    the strongest and most efficient signal.
     """
 
     def __init__(self, score_type="attention", alpha=0.001, top_k=50, window_size=1):
         """
         Args:
             score_type: Which LLM-Check score to use. One of:
-                "attention" — attention eigenvalue scores (default, strongest per paper)
+                "attention" — attention cumulative log-diagonal scores (default)
                 "hidden" — hidden state SVD scores
                 "perplexity" — perplexity
                 "entropy" — logit entropy
@@ -48,45 +49,15 @@ class LLMCheck(BaseBaseline):
         self.threshold = None
 
     @staticmethod
-    def _centered_svd_score(Z, alpha=0.001):
-        """
-        Compute the SVD-based hidden state score (Hidden Score).
-
-        Matches the reference implementation centered_svd_val():
-        - Z is transposed to (d, m) where d = hidden_size, m = seq_len
-        - Centering matrix J is (d, d), centering over hidden dimensions
-        - Covariance Σ = Zᵀ J Z is (m, m) — token covariance
-        - Score = mean(log(σᵢ)) where σᵢ are singular values of Σ
-
-        Args:
-            Z: Hidden state tensor of shape (seq_len, hidden_size).
-            alpha: Regularization added to covariance diagonal.
-
-        Returns:
-            Scalar Hidden Score.
-        """
-        # Transpose to (d, m) — matching reference's Z = torch.transpose(Z, 0, 1)
-        Z = Z.T  # (d, m)
-
-        # Centering over hidden dimensions: J = I - (1/d) 11ᵀ, shape (d, d)
-        J = torch.eye(Z.shape[0], device=Z.device) - (1 / Z.shape[0]) * torch.ones(
-            Z.shape[0], Z.shape[0], device=Z.device
-        )
-
-        # Token covariance: Zᵀ J Z → (m, d) @ (d, d) @ (d, m) = (m, m)
-        Sigma = Z.T @ J @ Z
-        Sigma = Sigma + alpha * torch.eye(Sigma.shape[0], device=Z.device)
-        svdvals = torch.linalg.svdvals(Sigma)
-        # Reference uses log(svdvals).mean() — no factor of 2
-        return torch.log(svdvals).mean()
-
-    @staticmethod
     def hidden_score(hidden_states, alpha=0.001):
         """
-        Compute per-layer Hidden Scores.
+        Compute per-layer, per-token Hidden Scores.
 
-        The mean log of singular values of the centered token covariance matrix
-        at each layer, following the reference implementation's centered_svd_val().
+        Matches the reference implementation centered_svd_val():
+        - Transposes hidden states to (d, m) per the paper's convention
+        - Centering matrix J is (d, d), centering over hidden dimensions
+        - Token covariance Σ = HᵀJH + αI is (m, m)
+        - Cumulative score at position t: (1/(t+1)) Σ_{i=1}^{t+1} log σᵢ
 
         Args:
             hidden_states: Tensor of shape
@@ -94,57 +65,57 @@ class LLMCheck(BaseBaseline):
             alpha: Regularization for covariance matrix.
 
         Returns:
-            Tensor of per-layer scores with shape (batch_size, n_layers).
+            Tensor of scores with shape (batch_size, seq_len, n_layers).
         """
+        hidden_states = hidden_states.to(torch.float32)
         batch_size, seq_len, n_layers, hidden_size = hidden_states.shape
-        scores = []
 
-        for b in range(batch_size):
-            layer_scores = []
-            for l in range(n_layers):
-                Z = hidden_states[b, :, l, :].to(torch.float32)  # (seq_len, hidden_size)
-                layer_scores.append(
-                    LLMCheck._centered_svd_score(Z, alpha=alpha).item()
-                )
-            scores.append(layer_scores)
+        # Reshape to merge batch and layers: (B*L, seq_len, hidden_size)
+        H = hidden_states.permute(0, 2, 1, 3).reshape(-1, seq_len, hidden_size)
 
-        return torch.tensor(scores)  # (batch_size, n_layers)
+        # Centering over hidden dimensions: J = I - (1/d) 11ᵀ, shape (d, d)
+        J = torch.eye(hidden_size, device=H.device) - (1.0 / hidden_size) * torch.ones(
+            hidden_size, hidden_size, device=H.device
+        )
+
+        # Transpose to (B*L, d, m) — paper's convention
+        H_t = H.transpose(-2, -1)
+
+        # Token covariance: H_tᵀ J H_t + αI → (B*L, m, m)
+        JH = torch.bmm(J.unsqueeze(0).expand(H_t.shape[0], -1, -1), H_t)  # (B*L, d, m)
+        Sigma = torch.bmm(H_t.transpose(-2, -1), JH)  # (B*L, m, m)
+        Sigma = Sigma + alpha * torch.eye(seq_len, device=Sigma.device).unsqueeze(0)
+
+        singular_values = torch.linalg.svdvals(Sigma)  # (B*L, m)
+        score = torch.cumsum(torch.log(singular_values), dim=-1)  # (B*L, m)
+        score /= torch.arange(1, score.shape[-1] + 1, device=score.device)  # normalize
+
+        score = score.reshape(batch_size, seq_len, n_layers)
+        return score
 
     @staticmethod
     def attention_score(attentions):
         """
-        Compute per-layer Attention Scores.
+        Compute per-layer, per-head, per-token Attention Scores.
 
-        For each layer, computes the sum of mean log-diagonal of the attention
-        kernel similarity maps across all heads. This matches the reference:
+        For each attention head, computes the cumulative log of the diagonal
+        entries of the attention kernel. Per the paper:
 
-            eigscore += torch.log(torch.diagonal(Sigma, 0)).mean()
+            log det(Ker_i) = Σ_{j=1}^{m} log Ker_i[j,j]
 
-        summed over heads (not averaged).
+        Score at position t is the running log-determinant up to that token.
 
         Args:
             attentions: Tensor of shape
                 (batch_size, n_layers, n_heads, seq_len, seq_len).
 
         Returns:
-            Tensor of per-layer scores with shape (batch_size, n_layers).
+            Tensor of attention scores with shape
+            (batch_size, n_layers, n_heads, seq_len).
         """
-        batch_size, n_layers, n_heads, seq_len, _ = attentions.shape
-        scores = []
-
-        for b in range(batch_size):
-            layer_scores = []
-            for l in range(n_layers):
-                eigscore = 0.0
-                for h in range(n_heads):
-                    attn = attentions[b, l, h]  # (seq_len, seq_len)
-                    eigscore += torch.log(
-                        torch.diagonal(attn, 0) + 1e-10
-                    ).mean()
-                layer_scores.append(eigscore.item())
-            scores.append(layer_scores)
-
-        return torch.tensor(scores)  # (batch_size, n_layers)
+        return torch.cumsum(
+            torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10), dim=-1
+        )
 
     @staticmethod
     def perplexity(scores, input_ids=None):
@@ -155,7 +126,7 @@ class LLMCheck(BaseBaseline):
             scores: Tensor of output logits with shape
                 (batch_size, seq_len, vocab_size).
             input_ids: Tensor of token IDs with shape (batch_size, seq_len).
-                If None, uses argmax of logits (teacher forcing with predicted tokens).
+                If None, uses argmax of logits.
 
         Returns:
             Tensor of perplexity scores with shape (batch_size,).
@@ -196,7 +167,7 @@ class LLMCheck(BaseBaseline):
 
     def predict_proba(self, outputs):
         """
-        Compute the selected LLM-Check uncertainty score.
+        Compute the selected LLM-Check uncertainty score at per-token granularity.
 
         Args:
             outputs: Dict of standardized model outputs with keys:
@@ -207,8 +178,8 @@ class LLMCheck(BaseBaseline):
 
         Returns:
             Tensor of uncertainty scores. Shape depends on score_type:
-                "attention": (batch_size, n_layers)
-                "hidden": (batch_size, n_layers)
+                "attention": (batch_size, n_layers, n_heads, seq_len)
+                "hidden": (batch_size, seq_len, n_layers)
                 "perplexity": (batch_size,)
                 "entropy": (batch_size, seq_len)
         """
@@ -233,12 +204,9 @@ class LLMCheck(BaseBaseline):
         """
         Find the optimal threshold for binary classification.
 
-        Since each score type is used independently per the paper, we find
-        the best threshold via grid search on the score values.
-
         Args:
             outputs: Dict of standardized model outputs.
-            labels: Binary hallucination labels.
+            labels: Binary hallucination labels (per-token).
         """
         probs = self.predict_proba(outputs)
 
@@ -252,16 +220,9 @@ class LLMCheck(BaseBaseline):
         else:
             probs_np = np.array(probs)
 
-        # Flatten to 1D if needed (e.g., per-layer scores → take mean across layers)
-        if probs_np.ndim > 1:
-            probs_flat = probs_np.mean(axis=-1)
-        else:
-            probs_flat = probs_np
-
-        if labels_np.ndim > 1:
-            labels_flat = labels_np.mean(axis=-1)
-        else:
-            labels_flat = labels_np
+        # Flatten to 1D for threshold search
+        probs_flat = probs_np.reshape(-1)
+        labels_flat = labels_np.reshape(-1)
 
         # Grid search for best threshold (maximize accuracy)
         best_threshold = 0.5
@@ -278,28 +239,16 @@ class LLMCheck(BaseBaseline):
 
     def predict(self, outputs):
         """
-        Predict binary hallucination labels using the fitted threshold.
+        Predict binary hallucination labels per token.
 
         Args:
             outputs: Dict of standardized model outputs.
 
         Returns:
-            Binary labels (0 = factual, 1 = hallucinated).
+            Binary labels with same shape as predict_proba output.
         """
         if self.threshold is None:
             raise RuntimeError("Must call fit() before predict().")
 
         probs = self.predict_proba(outputs)
-
-        if isinstance(probs, torch.Tensor):
-            probs_np = probs.cpu().numpy()
-        else:
-            probs_np = np.array(probs)
-
-        if probs_np.ndim > 1:
-            probs_flat = probs_np.mean(axis=-1)
-        else:
-            probs_flat = probs_np
-
-        preds = (probs_flat >= self.threshold).astype(int)
-        return torch.tensor(preds, dtype=torch.int)
+        return (probs >= self.threshold).int()
