@@ -111,11 +111,12 @@ class LLMCheck(BaseBaseline):
 
         Returns:
             Tensor of attention scores with shape
-            (batch_size, n_layers, n_heads, seq_len).
+            (batch_size, n_layers, seq_len).
         """
-        return torch.cumsum(
-            torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10), dim=-1
-        )
+        # Sum log-diagonals across heads (matching reference: eigscore += ...)
+        log_diag = torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10)  # (B, L, H, m)
+        head_sum = log_diag.sum(dim=2)  # (B, L, m)
+        return torch.cumsum(head_sum, dim=-1)
 
     @staticmethod
     def perplexity(scores, input_ids=None):
@@ -178,7 +179,7 @@ class LLMCheck(BaseBaseline):
 
         Returns:
             Tensor of uncertainty scores. Shape depends on score_type:
-                "attention": (batch_size, n_layers, n_heads, seq_len)
+                "attention": (batch_size, n_layers, seq_len)
                 "hidden": (batch_size, seq_len, n_layers)
                 "perplexity": (batch_size,)
                 "entropy": (batch_size, seq_len)
