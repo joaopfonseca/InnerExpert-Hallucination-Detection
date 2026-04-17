@@ -152,7 +152,21 @@ def expert_hidden_score(expert_hidden_states, expert_weights):
         Tensor of weighted hidden state scores with shape
         (batch_size, sequence_length, n_layers)
     """
-    expert_hidden_scores = hidden_score(expert_hidden_states)
+    # hidden_score expects a 4D tensor (B, S, L, H). Score each expert independently.
+    batch_size, seq_len, n_layers, n_experts, hidden_size = expert_hidden_states.shape
+    expert_hidden_states = (
+        expert_hidden_states
+        .permute(0, 3, 1, 2, 4)  # (B, E, S, L, H)
+        .reshape(
+            batch_size * n_experts, seq_len, n_layers, hidden_size
+        )  # (B*E, S, L, H)
+    )
+    expert_hidden_scores = hidden_score(expert_hidden_states)  # (B*E, S, L)
+
+    expert_hidden_scores = expert_hidden_scores.reshape(
+        batch_size, n_experts, seq_len, n_layers
+    ).permute(0, 2, 3, 1)  # (B, S, L, E)
+
     expert_weights = expert_weights / expert_weights.sum(
         dim=-1, keepdim=True
     )  # Normalize weights
