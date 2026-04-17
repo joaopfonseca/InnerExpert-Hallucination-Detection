@@ -1,13 +1,13 @@
 import torch
 
 
-def hidden_score(hidden_states, alpha=0.001):
+def hidden_score(hidden_states, alpha=0.001, cumulative=False):
     """
     Compute hidden state scores based on the LLM-Check method.
 
-    At each generation step t, computes the mean log-determinant of the
-    centered covariance matrix over tokens [0..t], following the LLM-Check
-    implementation (Sriramanan et al., NeurIPS 2024).
+    Computes the mean log-determinant of the centered covariance matrix of
+    hidden states, following the LLM-Check implementation (Sriramanan et al.,
+    NeurIPS 2024).
 
     The paper defines the Hidden Score as: 2/m * Σ log σᵢ, where σᵢ are the
     singular values of HᵀH (the uncentered covariance). However, the
@@ -25,37 +25,70 @@ def hidden_score(hidden_states, alpha=0.001):
             (batch_size, sequence_length, n_layers, hidden_size)
         alpha: Regularization parameter added to the covariance diagonal.
             Defaults to 0.001, matching the LLM-Check codebase.
+        cumulative: If True, compute scores cumulatively — at each step t,
+            the score uses tokens [0..t]. This is slower (O(seq_len) SVDs
+            per layer) but provides a per-token signal for tracking how
+            the representation evolves. If False (default), compute one
+            score per layer over the full sequence — much faster.
 
     Returns:
-        Tensor of hidden state scores with shape
-        (batch_size, sequence_length, n_layers), computed cumulatively
-        (score at position t uses tokens [0..t]).
+        If cumulative=False: Tensor of shape (batch_size, n_layers)
+        If cumulative=True: Tensor of shape (batch_size, sequence_length, n_layers)
     """
+    hidden_states = hidden_states.to(torch.float32)
     batch_size, seq_len, n_layers, hidden_size = hidden_states.shape
-    scores = torch.zeros(batch_size, seq_len, n_layers, dtype=torch.float32)
 
-    for t in range(seq_len):
-        # Extract tokens [0..t] at each layer
-        H = hidden_states[:, : t + 1, :, :].to(torch.float32)  # (batch, t+1, n_layers, hidden_size)
+    if not cumulative:
+        # Fast path: one SVD per layer per batch item over the full sequence
+        # Center the data
+        J = torch.eye(seq_len, device=hidden_states.device) - (1 / seq_len) * torch.ones(
+            seq_len, seq_len, device=hidden_states.device
+        )
 
-        for l in range(n_layers):
-            Z = H[:, :, l, :]  # (batch, t+1, hidden_size)
+        # Transpose to (batch, n_layers, hidden_size, seq_len) for batched matmul
+        H = hidden_states.permute(0, 2, 3, 1)  # (batch, n_layers, hidden_size, seq_len)
 
-            # Center the data: Z_c = J @ Z, where J = I - (1/m) 11ᵀ
-            m = Z.shape[1]
-            J = torch.eye(m, device=Z.device) - (1 / m) * torch.ones(m, m, device=Z.device)
+        # Covariance: H @ J @ Hᵀ → (batch, n_layers, hidden_size, hidden_size)
+        # H shape: (B, L, D, m), J shape: (m, m)
+        HJ = H @ J.unsqueeze(0).unsqueeze(0)  # (B, L, D, m)
+        Sigma = torch.bmm(
+            HJ.reshape(-1, hidden_size, seq_len),
+            H.reshape(-1, hidden_size, seq_len).transpose(-2, -1)
+        )  # (B*L, D, D)
+        Sigma = Sigma + alpha * torch.eye(hidden_size, device=Sigma.device).unsqueeze(0)
 
-            # Covariance: Zᵀ J Z gives (hidden_size, hidden_size)
-            # Process each batch item
-            for b in range(batch_size):
-                Zb = Z[b]  # (m, hidden_size)
-                Sigma = Zb.T @ J @ Zb  # (hidden_size, hidden_size)
-                Sigma = Sigma + alpha * torch.eye(hidden_size, device=Sigma.device)
-                svdvals = torch.linalg.svdvals(Sigma)
-                # Mean log-determinant: (2/m) Σ log σᵢ
-                scores[b, t, l] = 2 * torch.log(svdvals).mean()
+        svdvals = torch.linalg.svdvals(Sigma)  # (B*L, D)
+        scores = 2 * torch.log(svdvals).mean(dim=-1)  # (B*L,)
+        scores = scores.reshape(batch_size, n_layers)
 
-    return scores
+        return scores
+
+    else:
+        # Slow path: cumulative computation at each step
+        scores = torch.zeros(batch_size, seq_len, n_layers, dtype=torch.float32)
+
+        for t in range(seq_len):
+            H = hidden_states[:, : t + 1, :, :]  # (batch, t+1, n_layers, hidden_size)
+            m = t + 1
+
+            J = torch.eye(m, device=H.device) - (1 / m) * torch.ones(m, m, device=H.device)
+
+            for l in range(n_layers):
+                Z = H[:, :, l, :]  # (batch, m, hidden_size)
+
+                # Vectorized over batch: Zᵀ J Z → (batch, hidden_size, hidden_size)
+                ZJ = torch.bmm(Z.transpose(-2, -1), J.unsqueeze(0).expand(batch_size, -1, -1))
+                # ZJ: (batch, hidden_size, m) — this isn't right, let me fix
+                # Actually: Zᵀ @ J where Z is (batch, m, D) → Zᵀ is (batch, D, m)
+                # J is (m, m), so Zᵀ @ J is (batch, D, m)
+                ZtJ = torch.bmm(Z.transpose(-2, -1), J.unsqueeze(0).expand(batch_size, -1, -1))
+                Sigma = torch.bmm(ZtJ, Z)  # (batch, D, D)
+                Sigma = Sigma + alpha * torch.eye(hidden_size, device=Sigma.device).unsqueeze(0)
+
+                svdvals = torch.linalg.svdvals(Sigma)  # (batch, D)
+                scores[:, t, l] = 2 * torch.log(svdvals).mean(dim=-1)
+
+        return scores
 
 
 def attention_score(attentions):

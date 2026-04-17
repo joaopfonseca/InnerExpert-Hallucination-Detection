@@ -20,9 +20,10 @@ The current gold standard for training-free hallucination detection. Clusters mu
 
 #### 3. SelfCheckGPT (Manakul et al., EMNLP 2023)
 
-Detects hallucinations by measuring consistency across multiple sampled generations. Training-free and model-agnostic, but expensive (requires multiple generations per query). Important to include because our key advantage is cost: single-pass vs. multiple generations. We need the numbers to prove it.
+Detects hallucinations by measuring consistency across multiple sampled generations. The paper proposes five variants (BERTScore, QA, n-gram, NLI, Prompt), with **Prompt** being the strongest overall and **NLI** offering the best performance-computation tradeoff. We implement NLI and Prompt as the two most relevant variants for comparison.
 
 **Paper:** *SelfCheckGPT: Zero-Resource Black-Box Hallucination Detection for Generative Large Language Models* (EMNLP 2023)
+**Code:** https://github.com/potsawee/selfcheckgpt (pip: `selfcheckgpt`)
 
 **Rhetorical purpose:** Cost argument — same detection quality, fraction of the inference cost.
 
