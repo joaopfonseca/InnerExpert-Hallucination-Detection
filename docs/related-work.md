@@ -89,6 +89,30 @@ Evaluates model safety rather than factuality specifically. May be relevant as a
 
 ---
 
+## Uncertainty Decomposition & Epistemic Uncertainty
+
+Methods that decompose LLM uncertainty into epistemic and aleatoric components, or propose alternative decompositions. Relevant for understanding whether MoE routing signals can be interpreted as epistemic uncertainty proxies.
+
+### To Believe or Not to Believe Your LLM (Yadkori et al., 2024)
+
+Formalizes the epistemic/aleatoric split for LLMs and shows that high epistemic uncertainty → hallucination. Derives an information-theoretic metric to detect when only epistemic uncertainty is large (i.e., the output is unreliable) using iterative prompting. Provides theoretical grounding for using epistemic uncertainty proxies as hallucination detectors.
+
+**Paper:** *To Believe or Not to Believe Your LLM* (arXiv 2406.02543)
+
+### Extracting Uncertainty Estimates from MoEs (Pavlitska et al., 2025)
+
+The most directly relevant work for our epistemic uncertainty claim. Shows that uncertainty estimates can be extracted from MoE models without architectural modifications, using predictive entropy, mutual information between experts, and expert variance. Demonstrates that MoE mutual information captures epistemic uncertainty and outperforms ensembles for OoD detection. Conducted in semantic segmentation (not NLP), but the theoretical framework transfers directly.
+
+**Paper:** *Extracting Uncertainty Estimates from Mixtures of Experts for Semantic Segmentation* (arXiv 2509.04816)
+
+### The Anatomy of Uncertainty in LLMs (Taparia et al., 2026)
+
+Argues the classical epistemic/aleatoric dichotomy is insufficient for LLMs. Proposes a three-way decomposition: input ambiguity, knowledge gaps, and decoding randomness. Their "knowledge gaps" component maps closely to what MoE routing signals would capture. Shows that the dominance of these components shifts across model size and task.
+
+**Paper:** *The Anatomy of Uncertainty in LLMs* (arXiv 2603.24967)
+
+---
+
 ## Surveys
 
 ### UQ for Hallucination Detection (Kang et al., 2025)

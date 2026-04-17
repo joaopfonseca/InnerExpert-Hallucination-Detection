@@ -21,6 +21,7 @@ Using the `MoEMonitor` wrapper, we intercept the model's forward pass to collect
 - **Router entropy** — entropy of the gating distribution across experts; high entropy indicates the model is uncertain about which expert should handle the token
 - **Expert hidden scores** — weighted hidden state score across selected experts, capturing whether individual experts themselves are confident
 - **Expert similarity scores** — routing-weighted cosine similarity between expert hidden states; low similarity suggests experts disagree, indicating uncertainty
+- **Expert mutual information** — mutual information between expert predictions at each layer; a formally grounded measure of epistemic uncertainty derived from expert disagreement (cf. Pavlitska et al., 2025; Depeweg et al., 2018). High MI indicates that different experts would give different answers, i.e., the model lacks sufficient knowledge to converge on a single prediction
 - **Expert usage frequency** — how often each expert is selected across the sequence, normalized cumulatively
 - **Gini impurity of expert usage** — concentration of expert selection; low impurity means few experts dominate, high impurity means routing is scattered
 - **Inverse Herfindahl index (effective number of experts)** — captures how many experts are effectively contributing
@@ -53,6 +54,22 @@ Signals are combined to predict hallucination labels:
 - vs. **Semantic Energy**: we incorporate routing-level uncertainty rather than relying solely on logit-space energy, capturing structural uncertainty the penultimate layer may not reflect
 - vs. **HaluNet**: our method is training-free (in its simplest form), whereas HaluNet requires training a multi-branch neural network
 - vs. **Predictive Entropy**: router entropy captures *routing* uncertainty, which is orthogonal to output entropy and can detect cases where the model produces a confident output despite uncertain routing
+
+## Connection to Epistemic Uncertainty
+
+Our MoE routing signals can be interpreted as **proxies for epistemic uncertainty** — uncertainty arising from the model's lack of knowledge about the ground truth — rather than formal measurements of it. This distinction matters, but the connection is well-supported:
+
+**Theoretical grounding:**
+- **Expert disagreement as epistemic uncertainty.** In the ensemble uncertainty literature, disagreement among ensemble members is a standard proxy for epistemic uncertainty (Depeweg et al., 2018). An MoE model's experts can be viewed as an implicit ensemble, and their disagreement (low similarity, high mutual information) serves the same role. Pavlitska et al. (2025) explicitly demonstrate this connection for MoE models in semantic segmentation, showing that mutual information between experts captures epistemic uncertainty and outperforms traditional ensembles for OoD detection.
+- **Epistemic uncertainty → hallucination.** Yadkori et al. (2024) formalize the relationship between epistemic uncertainty and hallucinations in LLMs, showing that when epistemic uncertainty is high, the model's output is unreliable — i.e., likely hallucinated. This gives a theoretical basis for using epistemic uncertainty proxies as hallucination detectors.
+- **Router entropy as model uncertainty.** High routing entropy means the gating network cannot confidently assign a token to a specific expert, suggesting the input falls in a region where the model's knowledge is insufficient — structurally analogous to epistemic uncertainty.
+
+**Important caveats:**
+- Our signals come from a **single deterministic forward pass**, not from a Bayesian posterior or an explicit ensemble. Traditional epistemic uncertainty quantification requires some notion of "what the model would do under different parameterizations." Router entropy from one pass is a proxy, not a formal measure.
+- Some signals (output entropy, expert hidden scores) **mix epistemic and aleatoric** uncertainty and cannot cleanly separate the two from a single pass.
+- Taparia et al. (2026) argue that the classical epistemic/aleatoric dichotomy is insufficient for LLMs and propose a three-way decomposition (input ambiguity, knowledge gaps, decoding randomness). Our MoE signals most closely align with their "knowledge gaps" component — when the model lacks parametric evidence for a domain, routing becomes uncertain.
+
+**Practical implication:** We frame our method as providing *proxies for epistemic uncertainty* rather than formally measuring it. This is consistent with how most practical hallucination detection methods operate — even Semantic Uncertainty (Kuhn et al., 2023) uses semantic entropy as a proxy, not a direct epistemic measure. The key empirical question is whether MoE routing proxies are *better* proxies than existing ones, which our experiments will address.
 
 ## Open Questions
 
