@@ -28,8 +28,11 @@ OPENAI_API_KEY=your_openai_api_key_here
     - [ ] FacLens (hallucination detection)
     - [ ] SelfCheckGPT (hallucination detection)
     - [ ] LLM-Check (hallucination detection)
-    - [ ] ?
-    - [ ] SafeNudge (Safety evaluation - maybe?)
+    - [ ] ? (SafeNudge? Safety evaluation - maybe?)
+    - [ ] Semantic Uncertainty (Kuhn et al., 2023 - entropy over semantic clusters of generations)
+    - [ ] Predictive Entropy (standard token-level entropy baseline)
+    - [ ] DegLM (Dettmers et al., 2022 - density-based confidence estimation)
+    - [ ] In-Context Confidence Prompting (ask the model to self-assess confidence)
 
 - [x] Add evaluation metrics
     - [x] ROUGE
