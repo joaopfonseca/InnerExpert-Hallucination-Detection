@@ -221,9 +221,29 @@ class LLMCheck(BaseBaseline):
         else:
             probs_np = np.array(probs)
 
-        # Flatten to 1D for threshold search
-        probs_flat = probs_np.reshape(-1)
-        labels_flat = labels_np.reshape(-1)
+        # Align labels with score shape by repeating along layer dim if present
+        if self.score_type == "attention":
+            # probs: (B, n_layers, seq), labels: (B, seq)
+            n_layers = probs_np.shape[1]
+            probs_flat = probs_np.reshape(-1)
+            labels_expanded = np.repeat(labels_np[:, np.newaxis, :], n_layers, axis=1)
+            labels_flat = labels_expanded.reshape(-1)
+        elif self.score_type == "hidden":
+            # probs: (B, seq, n_layers), labels: (B, seq)
+            n_layers = probs_np.shape[2]
+            probs_flat = probs_np.reshape(-1)
+            labels_expanded = np.repeat(labels_np[:, :, np.newaxis], n_layers, axis=2)
+            labels_flat = labels_expanded.reshape(-1)
+        elif self.score_type == "perplexity":
+            # probs: (B,), labels: (B, seq) → reduce labels to answer-level
+            probs_flat = probs_np.reshape(-1)
+            if labels_np.ndim > 1:
+                labels_flat = labels_np.any(axis=-1).astype(float)  # any token hallucinated → 1
+            else:
+                labels_flat = labels_np.reshape(-1)
+        else:
+            probs_flat = probs_np.reshape(-1)
+            labels_flat = labels_np.reshape(-1)
 
         # Grid search for best threshold (maximize accuracy)
         best_threshold = 0.5
