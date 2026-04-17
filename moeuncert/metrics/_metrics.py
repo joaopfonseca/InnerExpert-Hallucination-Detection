@@ -1,46 +1,85 @@
 import torch
 
 
-def hidden_score(hidden_states):
+def hidden_score(hidden_states, alpha=0.001):
     """
     Compute hidden state scores based on the LLM-Check method.
 
+    At each generation step t, computes the mean log-determinant of the
+    centered covariance matrix over tokens [0..t], following the LLM-Check
+    implementation (Sriramanan et al., NeurIPS 2024).
+
+    The paper defines the Hidden Score as: 2/m * Σ log σᵢ, where σᵢ are the
+    singular values of HᵀH (the uncentered covariance). However, the
+    official implementation adds data centering (J = I - (1/m) 11ᵀ) and
+    αI regularization to the covariance matrix, which improves numerical
+    stability and makes the score more discriminative. We follow the
+    implementation here.
+
+    Note: The paper explicitly contrasts this with INSIDE (Chen et al., 2024),
+    which computes a centered covariance across *multiple model responses*.
+    Here, centering is applied within a single response's hidden states.
+
     Args:
         hidden_states: Tensor of hidden states with shape
-        (batch_size, sequence_length, n_layers, hidden_size)
+            (batch_size, sequence_length, n_layers, hidden_size)
+        alpha: Regularization parameter added to the covariance diagonal.
+            Defaults to 0.001, matching the LLM-Check codebase.
 
     Returns:
-        Tensor of hidden state scores with shape (batch_size, sequence_length, n_layers)
+        Tensor of hidden state scores with shape
+        (batch_size, sequence_length, n_layers), computed cumulatively
+        (score at position t uses tokens [0..t]).
     """
+    batch_size, seq_len, n_layers, hidden_size = hidden_states.shape
+    scores = torch.zeros(batch_size, seq_len, n_layers, dtype=torch.float32)
 
-    hidden_states_transposed = torch.transpose(
-        hidden_states, dim0=-2, dim1=-1
-    )  # (batch_size, sequence_length, hidden_size, n_layers)
-    cov_matrices = (
-        hidden_states @ hidden_states_transposed
-    )  # (batch_size, sequence_length, n_layers, n_layers)
-    singular_values = torch.linalg.svd(
-        cov_matrices.to(torch.float32)
-    ).S  # (batch_size, sequence_length, n_layers)
-    score = 2 * torch.cumsum(torch.log(singular_values), dim=-1)
-    score /= torch.arange(score.shape[-1]) + 1
+    for t in range(seq_len):
+        # Extract tokens [0..t] at each layer
+        H = hidden_states[:, : t + 1, :, :].to(torch.float32)  # (batch, t+1, n_layers, hidden_size)
 
-    return score
+        for l in range(n_layers):
+            Z = H[:, :, l, :]  # (batch, t+1, hidden_size)
+
+            # Center the data: Z_c = J @ Z, where J = I - (1/m) 11ᵀ
+            m = Z.shape[1]
+            J = torch.eye(m, device=Z.device) - (1 / m) * torch.ones(m, m, device=Z.device)
+
+            # Covariance: Zᵀ J Z gives (hidden_size, hidden_size)
+            # Process each batch item
+            for b in range(batch_size):
+                Zb = Z[b]  # (m, hidden_size)
+                Sigma = Zb.T @ J @ Zb  # (hidden_size, hidden_size)
+                Sigma = Sigma + alpha * torch.eye(hidden_size, device=Sigma.device)
+                svdvals = torch.linalg.svdvals(Sigma)
+                # Mean log-determinant: (2/m) Σ log σᵢ
+                scores[b, t, l] = 2 * torch.log(svdvals).mean()
+
+    return scores
 
 
 def attention_score(attentions):
     """
     Compute attention scores based on the LLM-Check method.
 
+    For each attention head, computes the log of the diagonal entries of the
+    attention kernel similarity map (Ker[j,j]). Per the paper, the eigenvalues
+    of the lower-triangular attention kernel are exactly the diagonal entries,
+    so no SVD is needed.
+
+    The paper aggregates these into a single scalar per layer by averaging
+    across heads and positions. Here we preserve per-head and per-token
+    granularity for token-level hallucination detection.
+
     Args:
         attentions: Tensor of attention matrices with shape
-        ([batch_size, ]num_layers, num_heads, seq_length, seq_length)
+            (batch_size, num_layers, num_heads, seq_length, seq_length)
 
     Returns:
-        Tensor of attention scores with shape (batch_size, num_layers, num_heads, seq_length)
+        Tensor of attention scores with shape
+        (batch_size, num_layers, num_heads, seq_length)
     """
-    score = torch.cumsum(torch.log(attentions.diagonal(dim1=-2, dim2=-1)), dim=-1)
-    return score
+    return torch.log(attentions.diagonal(dim1=-2, dim2=-1) + 1e-10)
 
 
 def topk_entropy(scores, k=None, softmax=True):
@@ -91,7 +130,7 @@ def cosine_similarity(hidden_states, eps=1e-08):
     return sim
 
 
-def expert_hidden_score(expert_hidden_states, expert_weights):
+def expert_hidden_score(expert_hidden_states, expert_weights, alpha=0.001):
     """
     Compute a weighted hidden state score across experts per layer.
 
@@ -104,12 +143,13 @@ def expert_hidden_score(expert_hidden_states, expert_weights):
             (batch_size, sequence_length, n_layers, n_experts, hidden_size)
         expert_weights: Tensor of routing weights with shape
             (batch_size, sequence_length, n_layers, n_experts)
+        alpha: Regularization parameter for hidden_score covariance.
 
     Returns:
         Tensor of weighted hidden state scores with shape
         (batch_size, sequence_length, n_layers)
     """
-    expert_hidden_scores = hidden_score(expert_hidden_states)
+    expert_hidden_scores = hidden_score(expert_hidden_states, alpha=alpha)
     expert_weights = expert_weights / expert_weights.sum(
         dim=-1, keepdim=True
     )  # Normalize weights

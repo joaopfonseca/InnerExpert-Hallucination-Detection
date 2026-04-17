@@ -4,6 +4,7 @@ from . import (
     metrics,
     monitoring,
     utils,
+    baselines,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "metrics",
     "monitoring",
     "utils",
+    "baselines",
 ]
