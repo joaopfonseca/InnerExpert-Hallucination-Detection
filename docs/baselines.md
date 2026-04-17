@@ -30,6 +30,11 @@ Detects hallucinations by measuring consistency across multiple sampled generati
 
 Uses hidden state covariance structure (SVD-based scores) and attention patterns to estimate confidence. Training-free, single-pass. We're already implementing their hidden state + attention scores — this is the most natural ablation point to show that adding MoE signals on top strictly improves over standard internal signals alone.
 
+**Important implementation note:** The LLM-Check paper defines the Hidden Score as the mean log-determinant of the uncentered covariance HᵀH. However, the official implementation adds data centering (J = I - (1/m)11ᵀ) and αI regularization. The paper explicitly contrasts this with INSIDE (Chen et al., 2024), which computes a centered covariance across *multiple model responses*. The centering in LLM-Check is applied within a single response's hidden states. We follow the implementation (with centering and regularization) as it produces the reported results and is more numerically stable.
+
+**Paper:** *LLM-Check: Investigating Detection of Hallucinations in Large Language Models* (NeurIPS 2024)
+**Code:** https://github.com/GaurangSriramanan/LLM_Check_Hallucination_Detection
+
 **Rhetorical purpose:** Ablation — do MoE signals add value on top of standard internal signals?
 
 ### Should Include
