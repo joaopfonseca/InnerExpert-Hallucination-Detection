@@ -20,8 +20,7 @@ Using the `MoEMonitor` wrapper, we intercept the model's forward pass to collect
 **MoE-specific signals:**
 - **Router entropy** — entropy of the gating distribution across experts; high entropy indicates the model is uncertain about which expert should handle the token
 - **Expert hidden scores** — weighted hidden state score across selected experts, capturing whether individual experts themselves are confident
-- **Expert similarity scores** — routing-weighted cosine similarity between expert hidden states; low similarity suggests experts disagree, indicating uncertainty
-- **Expert mutual information** — mutual information between expert predictions at each layer; a formally grounded measure of epistemic uncertainty derived from expert disagreement (cf. Pavlitska et al., 2025; Depeweg et al., 2018). High MI indicates that different experts would give different answers, i.e., the model lacks sufficient knowledge to converge on a single prediction
+- **Expert similarity scores** — routing-weighted cosine similarity between expert hidden states; low similarity suggests experts disagree, indicating uncertainty. This is our primary proxy for epistemic uncertainty: expert disagreement in representation space is analogous to ensemble disagreement, which is a well-established epistemic uncertainty measure (cf. Pavlitska et al., 2025, who use expert variance — inversely related to cosine similarity — for the same purpose)
 - **Expert usage frequency** — how often each expert is selected across the sequence, normalized cumulatively
 - **Gini impurity of expert usage** — concentration of expert selection; low impurity means few experts dominate, high impurity means routing is scattered
 - **Inverse Herfindahl index (effective number of experts)** — captures how many experts are effectively contributing
