@@ -20,8 +20,8 @@ class LLMCheck(BaseBaseline):
     LLM-Check baseline for hallucination detection.
 
     Implements the LLM-Check scoring suite as individual, independent scores:
-    - Attention Score (default): mean log-diagonal of attention kernel maps
-    - Hidden Score: mean log-determinant of hidden state covariance
+    - Attention Score (default): sum of mean log-diagonal of attention kernel maps
+    - Hidden Score: mean log of singular values of centered token covariance
     - Perplexity: token-level perplexity
     - Logit Entropy: entropy of the output token distribution
 
@@ -52,9 +52,11 @@ class LLMCheck(BaseBaseline):
         """
         Compute the SVD-based hidden state score (Hidden Score).
 
-        Centers the hidden state matrix and computes the mean log singular value
-        of the covariance matrix, following the paper's equation:
-            Σ² = Hᵀ H,  score = (2/m) Σ log σᵢ
+        Matches the reference implementation centered_svd_val():
+        - Z is transposed to (d, m) where d = hidden_size, m = seq_len
+        - Centering matrix J is (d, d), centering over hidden dimensions
+        - Covariance Σ = Zᵀ J Z is (m, m) — token covariance
+        - Score = mean(log(σᵢ)) where σᵢ are singular values of Σ
 
         Args:
             Z: Hidden state tensor of shape (seq_len, hidden_size).
@@ -63,24 +65,28 @@ class LLMCheck(BaseBaseline):
         Returns:
             Scalar Hidden Score.
         """
-        # Center the data
+        # Transpose to (d, m) — matching reference's Z = torch.transpose(Z, 0, 1)
+        Z = Z.T  # (d, m)
+
+        # Centering over hidden dimensions: J = I - (1/d) 11ᵀ, shape (d, d)
         J = torch.eye(Z.shape[0], device=Z.device) - (1 / Z.shape[0]) * torch.ones(
             Z.shape[0], Z.shape[0], device=Z.device
         )
-        # Covariance: Zᵀ J Z gives (hidden_size, hidden_size)
+
+        # Token covariance: Zᵀ J Z → (m, d) @ (d, d) @ (d, m) = (m, m)
         Sigma = Z.T @ J @ Z
         Sigma = Sigma + alpha * torch.eye(Sigma.shape[0], device=Z.device)
         svdvals = torch.linalg.svdvals(Sigma)
-        # Mean log-determinant: (2/m) Σ log σᵢ
-        return 2 * torch.log(svdvals).mean()
+        # Reference uses log(svdvals).mean() — no factor of 2
+        return torch.log(svdvals).mean()
 
     @staticmethod
     def hidden_score(hidden_states, alpha=0.001):
         """
         Compute per-layer Hidden Scores.
 
-        The mean log-determinant of the covariance matrix of hidden states at
-        each layer, following Section 4.1 of the paper.
+        The mean log of singular values of the centered token covariance matrix
+        at each layer, following the reference implementation's centered_svd_val().
 
         Args:
             hidden_states: Tensor of shape
@@ -109,14 +115,12 @@ class LLMCheck(BaseBaseline):
         """
         Compute per-layer Attention Scores.
 
-        For each layer, computes the mean log-diagonal of the attention kernel
-        similarity maps across all heads. This is the default and strongest
-        signal per the paper. It is also the cheapest to compute since it
-        requires no SVD.
+        For each layer, computes the sum of mean log-diagonal of the attention
+        kernel similarity maps across all heads. This matches the reference:
 
-        Following Section 4.1 of the paper:
-            log det(Ker_i) = Σ_j log Ker_i[j,j]
-            Attention Score = mean over heads of mean log-diagonal
+            eigscore += torch.log(torch.diagonal(Sigma, 0)).mean()
+
+        summed over heads (not averaged).
 
         Args:
             attentions: Tensor of shape
@@ -137,7 +141,7 @@ class LLMCheck(BaseBaseline):
                     eigscore += torch.log(
                         torch.diagonal(attn, 0) + 1e-10
                     ).mean()
-                layer_scores.append((eigscore / n_heads).item())
+                layer_scores.append(eigscore.item())
             scores.append(layer_scores)
 
         return torch.tensor(scores)  # (batch_size, n_layers)
@@ -146,9 +150,6 @@ class LLMCheck(BaseBaseline):
     def perplexity(scores, input_ids=None):
         """
         Compute perplexity from output logits.
-
-        Following Section 4.2 of the paper:
-            PPL(x) = exp( -1/(m-n+1) Σ log p_f(x_i | x_p ⊕ x_{<i}) )
 
         Args:
             scores: Tensor of output logits with shape
@@ -164,7 +165,6 @@ class LLMCheck(BaseBaseline):
         if input_ids is None:
             input_ids = scores.argmax(dim=-1)
 
-        # Per-token log probabilities
         log_probs = torch.log(probs + 1e-10)
         token_log_probs = log_probs.gather(
             2, input_ids.unsqueeze(-1)
@@ -177,8 +177,6 @@ class LLMCheck(BaseBaseline):
     def logit_entropy(scores, top_k=None):
         """
         Compute per-token logit entropy.
-
-        Following Section 4.2 of the paper.
 
         Args:
             scores: Tensor of output logits with shape
