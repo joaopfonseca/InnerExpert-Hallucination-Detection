@@ -28,17 +28,17 @@ Using the `MoEMonitor` wrapper, we intercept the model's forward pass to collect
 
 ### 2. Signal Aggregation
 
-The extracted signals are collected per token position and per layer. We aggregate them into feature vectors that can be used at two granularities:
+The extracted signals are collected per token position and per layer. The goal is to produce **per-token epistemic uncertainty estimates** — a confidence score for each generated token reflecting how likely it is to be hallucinated.
 
-- **Answer-level detection** — aggregate signals across all generated tokens (mean, max, variance) to produce a single hallucination confidence score for the entire answer
-- **Token-level detection** — use per-position signals to identify which specific tokens are likely hallucinated
+- **Token-level uncertainty** — the primary output of our method; per-position epistemic uncertainty proxy derived from routing and standard signals
+- **Answer-level scores** — used as an intermediate step to generate training and test labels (e.g., by aggregating token-level predictions or using external metrics like ROUGE/BLEU against references), not as the final goal
 
 ### 3. Hallucination Detection
 
-Signals are combined to predict hallucination labels:
+Signals are combined to predict per-token hallucination labels:
 
 - **Training-free approach** — use individual signals or simple combinations (e.g., logistic regression) as uncertainty scores, with thresholds optimized on validation data
-- **Trainable approach** — train a lightweight classifier (logistic regression, small MLP) on labeled data (from weak labels + LLM labeling) using the signal vector as features
+- **Trainable approach** — train a lightweight classifier (logistic regression, small MLP) on labeled data (from weak labels + LLM labeling) using the per-token signal vector as features; answer-level labels serve as supervision signal during training
 
 ## What Makes This Different
 
