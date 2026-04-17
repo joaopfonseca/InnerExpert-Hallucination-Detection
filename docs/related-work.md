@@ -56,21 +56,8 @@ Learns an uncertainty signal that is unconditional — it doesn't depend on spec
 
 ---
 
-## MoE-Specific Methods (Related but Not Direct Baselines)
 
-Methods that target Mixture-of-Experts architectures for calibration and OoD detection. These demonstrate that routing carries useful uncertainty information — supporting our hypothesis — but they do not directly address hallucination detection and are not directly comparable on the same benchmarks.
 
-### Bayesian MoE Routing (Li, 2025)
-
-Replaces deterministic top-k routing with a probability distribution over routing decisions, investigating three families of methods in weight-space, logit-space, and selection-space. Demonstrates improved routing stability, in-distribution calibration, and out-of-distribution detection on a 3B-parameter MoE model. Targets **calibration** and **OoD detection**, not hallucination detection per se — a well-calibrated model can still hallucinate on in-distribution inputs.
-
-**Paper:** *Bayesian Mixture-of-Experts: Towards Making LLMs Know What They Don't Know* (arXiv 2509.23830)
-
-### Variational Routing (Li et al., 2026)
-
-Extends the Bayesian MoE routing idea with a scalable variational inference framework for calibrated MoE transformers. Provides a more tractable alternative to full Bayesian routing while maintaining calibration benefits. Same caveat: targets calibration, not hallucination detection.
-
-**Paper:** *Variational Routing: A Scalable Bayesian Framework for Calibrated Mixture-of-Experts Transformers* (arXiv 2603.09453)
 
 ---
 
