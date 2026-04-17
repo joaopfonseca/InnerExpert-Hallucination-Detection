@@ -33,6 +33,10 @@ OPENAI_API_KEY=your_openai_api_key_here
     - [ ] Predictive Entropy (standard token-level entropy baseline)
     - [ ] DegLM (Dettmers et al., 2022 - density-based confidence estimation)
     - [ ] In-Context Confidence Prompting (ask the model to self-assess confidence)
+    - [ ] Semantic Energy (Ma et al., 2025 - Boltzmann energy on penultimate logits + semantic clustering, improves over semantic entropy)
+    - [ ] HaluNet (Tong et al., 2025 - multi-granular uncertainty: fuses token-level probability, semantic embeddings, and distributional uncertainty)
+    - [ ] Bayesian MoE Routing (Li, 2025 - Bayesian distribution over routing decisions for calibration and OoD detection; directly comparable to our approach)
+    - [ ] Unconditional Truthfulness (Vazhentsev et al., EMNLP 2025 - learns unconditional uncertainty signal without requiring input-specific generation)
 
 - [x] Add evaluation metrics
     - [x] ROUGE
