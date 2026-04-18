@@ -38,9 +38,24 @@ Focuses on factuality detection by analyzing the model's internal layer-wise rep
 
 ### Semantic Energy (Ma et al., 2025)
 
-Addresses a key weakness of semantic entropy: it operates on post-softmax probabilities, which lose uncertainty signal through the softmax normalization. Instead, Semantic Energy uses a Boltzmann-inspired energy function on the penultimate layer logits combined with semantic clustering. Better captures model uncertainty in cases where semantic entropy fails. Evaluated across multiple benchmarks with significant improvements.
+Addresses a key weakness of Semantic Entropy: it operates on post-softmax probabilities, which lose uncertainty signal through softmax normalization. When multiple sampled responses cluster together semantically, Semantic Entropy gives 0 (confident), even when the model's logits indicate low confidence. Semantic Energy catches this by operating on logit magnitudes.
+
+**How it works:**
+
+1. **Sample multiple responses** — Same as Semantic Entropy. Generate N responses per question.
+2. **Semantic clustering** — Same as Semantic Entropy. Cluster responses by semantic equivalence using an NLI/verification model. Each cluster gets a probability weight (proportion of responses in that cluster).
+3. **Compute energy** — Instead of computing entropy over cluster probabilities (Semantic Entropy), compute a Boltzmann-inspired energy from **penultimate layer logits**:
+   - For each cluster, compute the negative mean logit of the sampled tokens: `E(cluster) = -mean(logit_values)`
+   - Weight by cluster probability: `Semantic Energy = Σ_cluster p(cluster) * E(cluster)`
+
+**Key difference from Semantic Entropy:**
+- Semantic Entropy: uses `mean(log(probabilities))` → gives 0 when all responses cluster together
+- Semantic Energy: uses `mean(logit_values)` → captures model's inherent confidence even when responses cluster together
+
+**Why it matters for our comparison:** Semantic Energy operates on internal model signals (penultimate layer logits) rather than just output probabilities. It's the most similar baseline to our MoE approach in that it extracts uncertainty from the model's internals, not just its output distribution. This makes it a strong comparison point — we need to show that MoE routing signals capture something beyond what logit-space energy captures.
 
 **Paper:** *Semantic Energy: Detecting LLM Hallucination Beyond Entropy* (arXiv 2508.14496)
+**Code:** https://github.com/MaHuanAAA/SemanticEnergy
 
 ### HaluNet (Tong et al., 2025)
 

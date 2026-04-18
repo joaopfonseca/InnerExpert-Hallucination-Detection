@@ -11,6 +11,7 @@ from ._base import BaseBaseline
 from .predictive_entropy import PredictiveEntropy
 from .llm_check import LLMCheck
 from .selfcheck_gpt import SelfCheckNLI, SelfCheckPrompt
+from .semantic_energy import SemanticEnergy, compute_semantic_energy
 
 __all__ = [
     "BaseBaseline",
@@ -18,4 +19,6 @@ __all__ = [
     "LLMCheck",
     "SelfCheckNLI",
     "SelfCheckPrompt",
+    "SemanticEnergy",
+    "compute_semantic_energy",
 ]
