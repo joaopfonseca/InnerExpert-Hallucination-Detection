@@ -12,7 +12,24 @@ The simplest uncertainty baseline: compute the entropy of the model's predicted 
 
 #### 2. Semantic Uncertainty (Kuhn et al., 2023 / Nature 2024)
 
-The current gold standard for training-free hallucination detection. Clusters multiple generations by semantic equivalence, then computes entropy over clusters. Published in *Nature* — every reviewer will look for this. Our most direct competitor: both are uncertainty-based methods, but ours is cheaper (no multiple generations + semantic clustering needed).
+The current gold standard for training-free hallucination detection. Published in *Nature* — every reviewer will look for this. Our most direct competitor: both are uncertainty-based methods, but ours is cheaper (no multiple generations + semantic clustering needed).
+
+**How it works:**
+
+1. **Sample N responses** per question (e.g., 5–10 with temperature > 0).
+2. **Cluster by semantic equivalence** — use an NLI model (typically DeBERTa-v3-large fine-tuned on MNLI) to check whether each pair of responses entails each other. Responses that mutually entail are placed in the same cluster. "Paris" and "the French capital" → same cluster; "Paris" and "Lyon" → different clusters.
+3. **Compute cluster probabilities** — each cluster's probability is the proportion of sampled responses that fall into it: p(c) = |c| / N.
+4. **Compute Semantic Entropy** — entropy over the cluster distribution:
+
+   SE = −Σ_c p(c) log p(c)
+
+**When SE is low:** Most responses cluster together → model is confident (even if worded differently). "Paris" and "France's capital" give SE ≈ 0.
+
+**When SE is high:** Responses split across multiple clusters → model is uncertain → likely hallucinating.
+
+**Key insight:** By clustering at the semantic level rather than the token level, you get a much cleaner uncertainty signal. Regular predictive entropy treats "Paris" and "the French capital" as different answers, inflating uncertainty estimates when the model is actually confident — it just expresses the same answer differently. Semantic clustering fixes this.
+
+**Limitation (addressed by Semantic Energy):** When *all* responses cluster together, SE = 0 regardless of how confident the model actually is in those tokens. The model could be generating with very low logit magnitudes (unsure) or very high logit magnitudes (confident) — SE can't tell the difference. Semantic Energy fixes this by looking at logit magnitudes.
 
 **Paper:** *Semantic Uncertainty: Linguistic Invariances for Uncertainty Estimation in Natural Language Generation* (ICLR 2023) and *Detecting Hallucinations in Large Language Models Using Semantic Entropy* (Nature, 2024)
 
