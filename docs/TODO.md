@@ -20,7 +20,7 @@
 ## Baselines (see docs/baselines.md for rationale)
 
 - [x] Predictive Entropy (simplest baseline, sets the floor)
-- [ ] Semantic Uncertainty (Kuhn et al., 2023 / Nature 2024 - gold standard for training-free hallucination detection)
+- [x] Semantic Uncertainty (Kuhn et al., 2023 / Nature 2024 - gold standard for training-free hallucination detection)
 - [x] SelfCheckGPT (Manakul et al., EMNLP 2023 - generation consistency baseline)
 - [x] LLM-Check (Mitchell et al., 2023 - internal signal baseline; natural ablation point)
 - [x] Semantic Energy (Ma et al., 2025 - logit-space energy, improves over semantic entropy)
