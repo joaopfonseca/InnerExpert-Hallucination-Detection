@@ -12,6 +12,14 @@ from .predictive_entropy import PredictiveEntropy
 from .llm_check import LLMCheck
 from .selfcheck_gpt import SelfCheckNLI, SelfCheckPrompt
 from .semantic_energy import SemanticEnergy, compute_semantic_energy
+from .semantic_uncertainty import (
+    SemanticUncertainty,
+    EntailmentDeberta,
+    get_semantic_ids,
+    semantic_ids_to_groups,
+    semantic_ids_to_clusters,
+    logsumexp_by_id,
+)
 
 __all__ = [
     "BaseBaseline",
@@ -21,4 +29,10 @@ __all__ = [
     "SelfCheckPrompt",
     "SemanticEnergy",
     "compute_semantic_energy",
+    "SemanticUncertainty",
+    "EntailmentDeberta",
+    "get_semantic_ids",
+    "semantic_ids_to_groups",
+    "semantic_ids_to_clusters",
+    "logsumexp_by_id",
 ]
