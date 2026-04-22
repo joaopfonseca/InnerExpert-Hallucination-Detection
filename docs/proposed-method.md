@@ -36,8 +36,8 @@ The extracted signals are collected per token position and per layer. The goal i
 
 Signals are combined to predict per-token hallucination labels:
 
-- **Training-free approach** — use individual signals or simple combinations (e.g., logistic regression) as uncertainty scores, with thresholds optimized on validation data
-- **Trainable approach** — train a lightweight classifier (logistic regression, small MLP) on labeled data (from weak labels + LLM labeling) using the per-token signal vector as features; answer-level labels serve as supervision signal during training
+- **Training-free (threshold-based) approach** — use individual signals or simple combinations (e.g., logistic regression) as uncertainty scores, with thresholds optimized on validation data. This is the simplest form: single-pass, no training of any neural network, just threshold tuning on a held-out set.
+- **Trainable approach** — train a lightweight classifier (logistic regression, small MLP) on labeled data (from weak labels + LLM labeling) using the per-token signal vector as features; answer-level labels serve as supervision signal during training. This is the same paradigm as HaluNet and allows us to learn which MoE signals are most predictive.
 
 ## What Makes This Different
 
@@ -51,7 +51,7 @@ Signals are combined to predict per-token hallucination labels:
 - vs. **SelfCheckGPT / Semantic Uncertainty**: our method is single-pass (no need for multiple generations), significantly cheaper at inference time
 - vs. **LLM-Check**: we add MoE-specific signals on top of their hidden state + attention approach, providing strictly more information
 - vs. **Semantic Energy**: we incorporate routing-level uncertainty rather than relying solely on logit-space energy, capturing structural uncertainty the penultimate layer may not reflect
-- vs. **HaluNet**: our method is training-free (in its simplest form), whereas HaluNet requires training a multi-branch neural network
+- vs. **HaluNet**: both methods are trainable lightweight classifiers, but our method operates on MoE-specific routing signals (router entropy, expert disagreement, Gini, Herfindahl) in addition to standard signals (logits, hidden states, entropies), giving it a strictly richer feature set within the same training paradigm
 - vs. **Predictive Entropy**: router entropy captures *routing* uncertainty, which is orthogonal to output entropy and can detect cases where the model produces a confident output despite uncertain routing
 
 ## Connection to Epistemic Uncertainty
