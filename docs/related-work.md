@@ -72,6 +72,9 @@ Identifies a sparse subset of FFN neurons (< 0.1% of total) whose activations re
 **Paper:** *H-Neurons: On the Existence, Impact, and Origin of Hallucination-Associated Neurons in LLMs* (arXiv 2512.01797)
 **Code:** https://github.com/thunlp/H-Neurons
 
+**Comparison to our method:**
+While H-Neurons provides valuable *mechanistic insights* into which neurons drive hallucinations, our method addresses the complementary question of *when* hallucinations are occurring — a practical detection task. H-Neurons requires invasive per-neuron analysis and is not designed for deployment; our MoE routing signals are naturally available during standard inference and enable efficient per-token detection.
+
 ### HaluNet (Tong et al., 2025)
 
 A lightweight, trainable neural framework that fuses multi-granular uncertainty signals: token-level probability uncertainty, semantic embeddings, and distributional uncertainty. Its multi-branch architecture adaptively combines what the model "knows" (semantic representations) with how uncertain its outputs are. Enables efficient one-pass hallucination detection. Evaluated on SQuAD, TriviaQA, and Natural Questions with and without context access.
