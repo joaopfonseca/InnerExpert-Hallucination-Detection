@@ -57,6 +57,21 @@ Addresses a key weakness of Semantic Entropy: it operates on post-softmax probab
 **Paper:** *Semantic Energy: Detecting LLM Hallucination Beyond Entropy* (arXiv 2508.14496)
 **Code:** https://github.com/MaHuanAAA/SemanticEnergy
 
+### H-Neurons (Gao et al., 2025)
+
+Identifies a sparse subset of FFN neurons (< 0.1% of total) whose activations reliably predict hallucinations. Uses contrastive activation analysis (faithful vs. hallucinated responses) and sparse logistic regression on the CETT neuron contribution metric to isolate "H-Neurons" (hallucination-associated neurons).
+
+**Key findings:**
+- H-Neurons are causally linked to **over-compliance** — not just factual errors, but a general tendency to satisfy user requests at the expense of truthfulness, safety, or integrity
+- Amplifying H-Neurons increases compliance with invalid premises, misleading context, sycophantic attitudes, and harmful instructions
+- H-Neurons emerge during **pre-training**, not post-training alignment — they transfer from instruction-tuned models back to base models
+- Extremely sparse: typically < 1‰ of total neurons, yet sufficient for reliable detection
+
+**Relevance to our work:** H-Neurons operates at the microscopic **individual neuron** level, while our method operates at the **macroscopic routing level**. Both use internal signals, but H-Neurons requires per-neuron activation extraction (invasive, FFN-specific), whereas MoE routing signals are naturally available from the model's standard outputs. Our method is more practical for deployment and captures structural uncertainty (expert disagreement) that neuron-level analysis cannot access.
+
+**Paper:** *H-Neurons: On the Existence, Impact, and Origin of Hallucination-Associated Neurons in LLMs* (arXiv 2512.01797)
+**Code:** https://github.com/thunlp/H-Neurons
+
 ### HaluNet (Tong et al., 2025)
 
 A lightweight, trainable neural framework that fuses multi-granular uncertainty signals: token-level probability uncertainty, semantic embeddings, and distributional uncertainty. Its multi-branch architecture adaptively combines what the model "knows" (semantic representations) with how uncertain its outputs are. Enables efficient one-pass hallucination detection. Evaluated on SQuAD, TriviaQA, and Natural Questions with and without context access.
