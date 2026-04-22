@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 
 def hidden_score(hidden_states, alpha=0.001):
@@ -282,7 +283,19 @@ def inverse_herfindahl_index(expert_usage, eps=1e-10):
     return 1.0 / torch.sum(expert_usage**2 + eps, dim=-1)
 
 
-def compute_metrics(standardized_outputs):
+def compute_metrics(standardized_outputs, return_baseline_features=False):
+    """Compute uncertainty metrics from standardized model outputs.
+
+    Args:
+        standardized_outputs: Dict with keys like 'hidden_states', 'attentions',
+            'scores', 'sequences', etc. from standardize_outputs().
+        return_baseline_features: If True, also compute per-token log-likelihoods
+            and full-vocabulary entropies needed by trainable baselines like
+            HaluNet. Default False to avoid unnecessary computation.
+
+    Returns:
+        Dict of computed metrics.
+    """
 
     metrics = {}
     if "hidden_states" in standardized_outputs:
@@ -301,6 +314,24 @@ def compute_metrics(standardized_outputs):
         # Shape of output logits: (batch_size, sequence_length, vocab_size)
         # Shape of top-k entropy scores: (batch_size, sequence_length)
         metrics["scores_entropy"] = topk_entropy(standardized_outputs["scores"], k=5)
+
+        # Baseline-specific features for trainable methods (e.g., HaluNet)
+        if return_baseline_features:
+            scores = standardized_outputs["scores"]  # (B, gen_seq_len, vocab_size)
+            sequences = standardized_outputs["sequences"]  # (B, seq_len)
+            gen_seq_len = scores.shape[1]
+
+            # Per-token log-likelihoods: log p(x_t | x_{<t}) for each generated token
+            log_probs = F.log_softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+            # Gather log prob of the actual generated token
+            gen_token_ids = sequences[:, -gen_seq_len:].unsqueeze(-1)  # (B, gen_seq_len, 1)
+            log_likelihoods = log_probs.gather(-1, gen_token_ids).squeeze(-1)  # (B, gen_seq_len)
+            metrics["log_likelihoods"] = log_likelihoods
+
+            # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
+            probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+            entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
+            metrics["entropies"] = entropies
 
     if "expert_weights" in standardized_outputs:
         # Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)
