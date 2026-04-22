@@ -67,11 +67,21 @@ Addresses semantic entropy's weakness by operating on penultimate-layer logits w
 
 #### 6. HaluNet (Tong et al., 2025)
 
-A trainable multi-branch neural framework that fuses token-level probability uncertainty, semantic embeddings, and distributional uncertainty. Tested on SQuAD, TriviaQA, and Natural Questions (overlapping with our datasets). Good as a trainable upper-bound comparison to show where a trained method sits, even though it's a different category (requires training, not post-hoc).
+A lightweight trainable multi-branch neural framework that fuses three token-level uncertainty signals:
+
+1. **Log-likelihood branch** — per-token log probabilities (probabilistic confidence)
+2. **Entropy branch** — per-token predictive entropy (distributional uncertainty)
+3. **Embedding branch** — hidden-state embeddings via 2-layer 1D Conv (semantic trajectory)
+
+Each branch produces a latent vector; branch outputs are fused via attention or MLP, then projected to a single hallucination probability. Trained with binary cross-entropy on LLM-as-a-Judge labels.
+
+**Architecture:** Scalar features (log-likelihoods, entropies) → mean pooling + 2-layer MLP; embedding features → 2-layer Conv1D + ReLU + adaptive avg pooling; attention-based or MLP fusion; output sigmoid.
+
+**Key distinction from our method:** HaluNet uses standard transformer signals (logits, hidden states) across all layers/tokens. Our method adds MoE-specific routing signals (router entropy, expert disagreement, Gini, Herfindahl) on top of these, providing complementary uncertainty information from the routing behavior itself.
 
 **Paper:** *HaluNet: Multi-Granular Uncertainty Modeling for Efficient Hallucination Detection in LLM Question Answering* (arXiv 2512.24562)
 
-**Rhetorical purpose:** Trainable upper bound — how close does a training-free approach get?
+**Rhetorical purpose:** Trainable comparison — both our method and HaluNet are lightweight trainable classifiers. Can MoE signals improve over standard signals within the same training paradigm?
 
 ## Excluded Baselines
 

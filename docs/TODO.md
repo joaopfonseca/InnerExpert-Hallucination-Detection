@@ -24,7 +24,7 @@
 - [x] SelfCheckGPT (Manakul et al., EMNLP 2023 - generation consistency baseline)
 - [x] LLM-Check (Mitchell et al., 2023 - internal signal baseline; natural ablation point)
 - [x] Semantic Energy (Ma et al., 2025 - logit-space energy, improves over semantic entropy)
-- [ ] HaluNet (Tong et al., 2025 - trainable upper bound)
+- [x] HaluNet (Tong et al., 2025 - trainable upper bound)
 
 ## Evaluation Metrics
 

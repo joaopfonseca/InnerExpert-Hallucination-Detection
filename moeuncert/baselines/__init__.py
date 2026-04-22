@@ -20,6 +20,7 @@ from .semantic_uncertainty import (
     semantic_ids_to_clusters,
     logsumexp_by_id,
 )
+from .halunet import HaluNet
 
 __all__ = [
     "BaseBaseline",
@@ -35,4 +36,5 @@ __all__ = [
     "semantic_ids_to_groups",
     "semantic_ids_to_clusters",
     "logsumexp_by_id",
+    "HaluNet",
 ]
