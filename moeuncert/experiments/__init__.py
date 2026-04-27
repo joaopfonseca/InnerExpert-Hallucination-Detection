@@ -13,6 +13,7 @@ from .utils import (
     get_quantization_kwargs,
     read_and_collate_outputs,
     stratified_group_split,
+    compute_metrics_at_threshold,
 )
 from .data_loading import (
     load_labeled_dataset,
