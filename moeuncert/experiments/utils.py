@@ -185,3 +185,52 @@ def stratified_group_split(
     val_mask = np.isin(groups, val_groups)
 
     return train_mask, val_mask
+
+
+def compute_metrics_at_threshold(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    threshold: float = 0.5,
+) -> Dict[str, float]:
+    """Compute classification metrics at a given threshold.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        True binary labels.
+    y_proba : np.ndarray
+        Predicted probabilities.
+    threshold : float
+        Classification threshold.
+
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary of metrics (auroc, auprc, f1, accuracy, tpr_at_5fpr).
+    """
+    y_pred = (y_proba >= threshold).astype(int)
+
+    # AUROC (threshold-independent)
+    auroc = roc_auc_score(y_true, y_proba) if len(np.unique(y_true)) > 1 else 0.5
+
+    # AUPRC
+    auprc = average_precision_score(y_true, y_proba) if len(np.unique(y_true)) > 1 else 0.0
+
+    # F1
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    # Accuracy
+    acc = accuracy_score(y_true, y_pred)
+
+    # TPR @ 5% FPR
+    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    tpr_at_5fpr = np.interp(0.05, fpr, tpr) if len(fpr) > 0 else 0.0
+
+    return {
+        "auroc": float(auroc),
+        "auprc": float(auprc),
+        "f1": float(f1),
+        "accuracy": float(acc),
+        "tpr_at_5fpr": float(tpr_at_5fpr),
+        "threshold": float(threshold),
+    }
