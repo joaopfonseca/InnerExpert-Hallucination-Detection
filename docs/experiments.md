@@ -114,8 +114,35 @@ Why F1?
 After tuning:
 - Your detector: `detector.pkl` (pickled sklearn pipeline)
 - HaluNet: `halunet.pt` (PyTorch checkpoint)
-- Threshold baselines: `thresholds.json` (one threshold per baseline)
+- Threshold baselines: `thresholds.json` — one entry per baseline with:
+  - `threshold`: optimal classification threshold
+  - `layer`: optimal layer index (for layer-dependent baselines like LLM-Check)
+  - `score_type`: which score type (for LLM-Check variants)
 - Val results: `val_results.json` (for appendix)
+
+### Layer Selection for LLM-Check
+
+LLM-Check produces per-token scores across **all layers** (e.g., attention score has shape `(batch, n_layers, seq_len)`). Rather than combining layers, we follow the paper's approach:
+
+1. **Evaluate each layer independently** on the validation split
+2. **Pick the layer with highest AUROC** for each score type
+3. **Save the layer index** in `thresholds.json`
+4. **On test, use only that layer**
+
+This matches the paper's per-layer evaluation and avoids storing all layers in predictions. The layer selection is a hyperparameter tuned on validation, not test.
+
+Example `thresholds.json`:
+```json
+{
+  "predictive_entropy": {"threshold": 2.34},
+  "llm_check_attention": {"threshold": -15.2, "layer": 8},
+  "llm_check_hidden": {"threshold": -3.1, "layer": 12},
+  "llm_check_perplexity": {"threshold": 4.5, "layer": null},
+  "llm_check_entropy": {"threshold": 1.8, "layer": 10},
+  "semantic_uncertainty": {"threshold": 0.65},
+  "semantic_energy": {"threshold": -2.1}
+}
+```
 
 ## OOD Evaluation (Main Result)
 
