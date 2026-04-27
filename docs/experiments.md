@@ -54,6 +54,11 @@ All methods are evaluated against **LLM-as-a-Judge labels** (from `2.0-make-labe
 
 ### Primary Metrics (Reported for All Methods)
 
+We report results at **two levels of granularity**:
+
+1. **Answer-level** — all baselines report answer-level scores (aggregated from token-level where applicable)
+2. **Token-level** — only token-level baselines (PredictiveEntropy, LLM-Check, and our MoE detector) report per-token scores
+
 | Metric | Description | Why It Matters |
 |---|---|---|
 | **F1-Score** | Harmonic mean of precision and recall | **Hyperparameter tuning objective** — balances false positives and false negatives |
@@ -69,10 +74,22 @@ All methods are evaluated against **LLM-as-a-Judge labels** (from `2.0-make-labe
 
 ### Per-Baseline Reporting
 
-Each baseline is evaluated on **all four primary metrics** on the test set (2026). Results are presented as:
-- A comparison table (baseline × metric)
-- ROC curves (all baselines overlaid)
-- Calibration plots (per baseline)
+**Answer-level** (all baselines):
+- PredictiveEntropy, LLM-Check: aggregated via mean and max across tokens
+- SemanticUncertainty, SemanticEnergy: answer-level scores directly
+- SelfCheckGPT: answer-level consistency score
+- HaluNet: answer-level probability
+- **Ours**: aggregated token-level detector score
+
+**Token-level** (subset of baselines):
+- PredictiveEntropy: per-token entropy scores
+- LLM-Check: per-token attention/hidden/perplexity/entropy scores
+- **Ours**: per-token MoE routing signals (router entropy, expert similarity, Gini, Herfindahl, etc.)
+
+Results are presented as:
+- Comparison tables (baseline × metric, one for answer-level, one for token-level)
+- ROC curves (answer-level and token-level separately)
+- Calibration plots
 
 ## Hyperparameter Tuning
 
@@ -192,3 +209,11 @@ Each baseline needs different features from the saved `.pt` outputs:
 | SemanticEnergy | Sampled responses + logits + clusters | `1.1-generate-baseline-samples.py` |
 | SelfCheckGPT | Generated answer (whole text) + sampled passages | `1.1-generate-baseline-samples.py` |
 | HaluNet | `log_likelihoods`, `entropies`, `embeddings` | `compute_metrics(return_baseline_features=True)` |
+
+### Feature Normalization
+
+For the trainable detector and HaluNet, features are normalized using `StandardScaler` **except**:
+- `expert_usage` features (ratios/proportions, already bounded) — **not normalized**
+- All other numerical features (hidden_scores, attention_scores, router_entropy, etc.) — **normalized**
+
+This preserves the interpretability of expert usage ratios while ensuring features with different scales don't dominate the classifier.
