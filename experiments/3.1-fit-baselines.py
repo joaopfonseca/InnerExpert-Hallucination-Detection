@@ -147,8 +147,6 @@ def fit_llm_check(
     """Fit LLM-Check baseline for a specific score type and find optimal layer."""
     print(f"\n--- LLM-Check (score_type={score_type}, aggregation={aggregation}) ---")
     
-    baseline = LLMCheck(score_type=score_type)
-    
     # Extract question_ids
     qids = outputs['question_id'].numpy()
     label_qids, labels = extract_answer_level_labels(labels_df)
@@ -233,10 +231,11 @@ def fit_llm_check(
         
         matched_labels = np.array([qid_to_label[qid] for qid in qids])
         
-        baseline.fit(perplexities.numpy(), matched_labels)
+        threshold, acc = optimal_threshold(matched_labels, perplexities.numpy())
+        auroc = roc_auc_score(matched_labels, perplexities.numpy()) if len(np.unique(matched_labels)) > 1 else 0.5
         
         return {
-            "threshold": float(baseline.threshold),
+            "threshold": float(threshold),
             "aggregation": aggregation,
         }
     
@@ -253,10 +252,11 @@ def fit_llm_check(
         )
         matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
         
-        baseline.fit(agg_scores, matched_labels)
+        threshold, acc = optimal_threshold(matched_labels, agg_scores)
+        auroc = roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
         
         return {
-            "threshold": float(baseline.threshold),
+            "threshold": float(threshold),
             "aggregation": aggregation,
         }
 
