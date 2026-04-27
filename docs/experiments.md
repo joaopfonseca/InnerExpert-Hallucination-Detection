@@ -217,3 +217,78 @@ For the trainable detector and HaluNet, features are normalized using `StandardS
 - All other numerical features (hidden_scores, attention_scores, router_entropy, etc.) — **normalized**
 
 This preserves the interpretability of expert usage ratios while ensuring features with different scales don't dominate the classifier.
+
+## Prediction Output Schema
+
+The `4.0-model-evaluation.py` script saves raw predictions for all methods in `data/<dataset_slug>/<model_slug>/predictions/`. Each baseline produces a `.parquet` file with a consistent schema:
+
+### Token-Level Predictions (when applicable)
+
+For baselines that produce per-token uncertainty scores:
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | int | Question identifier |
+| `token_position` | int | Position of the token within the generated answer |
+| `score` | float | Uncertainty/hallucination score for this token |
+
+**Token-level baselines:**
+- PredictiveEntropy
+- LLM-Check (attention, hidden, entropy) — one file per score type
+- Our MoE detector
+
+### Answer-Level Predictions (when token-level not available)
+
+For baselines that natively produce answer-level scores:
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | int | Question identifier |
+| `score` | float | Uncertainty/hallucination score for the entire answer |
+
+**Answer-level baselines:**
+- SemanticUncertainty
+- SemanticEnergy
+- SelfCheckNLI
+- SelfCheckPrompt
+- HaluNet
+- LLM-Check (perplexity — scalar per answer)
+
+### LLM-Check Multi-Score Output
+
+LLM-Check produces 4 score types. Rather than 4 separate files, we save one file with multiple score columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | int | Question identifier |
+| `token_position` | int | Token position (for attention/hidden/entropy) |
+| `attention_score` | float | Attention-based score (per-token, summed over heads) |
+| `hidden_score` | float | Hidden-state SVD score (per-token) |
+| `perplexity_score` | float | Perplexity score (answer-level scalar) |
+| `entropy_score` | float | Output entropy score (per-token) |
+
+### Ground Truth File
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | int | Question identifier |
+| `token_label` | int (0/1) | Token-level hallucination label (if available) |
+| `answer_label` | int (0/1) | Answer-level hallucination label |
+
+The `5.0-results-analysis.py` script reads all prediction files + ground truth, joins on `question_id` (and `token_position` for token-level), aggregates as needed, and computes metrics.
+
+### File Organization
+
+```
+data/<dataset_slug>/<model_slug>/
+├── predictions/
+│   ├── predictive_entropy.parquet
+│   ├── llm_check.parquet           # Multi-column: attention, hidden, perplexity, entropy
+│   ├── semantic_uncertainty.parquet
+│   ├── semantic_energy.parquet
+│   ├── selfcheck_nli.parquet
+│   ├── selfcheck_prompt.parquet
+│   ├── halunet.parquet
+│   ├── detector.parquet            # Our MoE detector
+│   └── ground_truth.parquet
+```
