@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 from pathlib import Path
-from typing import List, Dict, Optional, Set, Union
-from sklearn.metrics import roc_curve
+from typing import List, Dict, Optional, Set, Union, Tuple
+from sklearn.metrics import roc_curve, roc_auc_score, average_precision_score, f1_score, accuracy_score
 
 
 def read_and_collate_outputs(
@@ -135,3 +135,53 @@ def optimal_threshold(y_true, scores):
     acc = (tpr * n_pos + (1 - fpr) * n_neg) / len(y_true)
     best = np.argmax(acc)
     return thresholds[best], acc[best]
+
+
+def stratified_group_split(
+    y: np.ndarray,
+    groups: np.ndarray,
+    test_size: float = 0.1,
+    random_state: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Stratified train/val split grouped by question_id.
+
+    Each question (and all its tokens/responses) goes entirely to train or val.
+    Stratification ensures similar label distribution in train and val.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Labels (binary).
+    groups : np.ndarray
+        Group IDs (question_id values).
+    test_size : float
+        Fraction of groups for validation.
+    random_state : int
+        Random seed.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Boolean masks for train and val indices.
+    """
+    from sklearn.model_selection import StratifiedShuffleSplit
+
+    unique_groups = np.unique(groups)
+    group_labels = np.array([
+        int(y[groups == g].max()) for g in unique_groups
+    ])
+
+    sss = StratifiedShuffleSplit(
+        n_splits=1, test_size=test_size, random_state=random_state
+    )
+    train_group_idx, val_group_idx = next(
+        sss.split(unique_groups, group_labels)
+    )
+
+    train_groups = unique_groups[train_group_idx]
+    val_groups = unique_groups[val_group_idx]
+
+    train_mask = np.isin(groups, train_groups)
+    val_mask = np.isin(groups, val_groups)
+
+    return train_mask, val_mask

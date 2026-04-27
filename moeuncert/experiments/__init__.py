@@ -12,6 +12,7 @@ from .utils import (
     optimal_threshold,
     get_quantization_kwargs,
     read_and_collate_outputs,
+    stratified_group_split,
 )
 from .data_loading import (
     load_labeled_dataset,
