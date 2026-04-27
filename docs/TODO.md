@@ -38,5 +38,8 @@
 ## Pipeline
 
 - [x] Sampling generation script for multi-response baselines (Semantic Uncertainty, SelfCheckGPT, Semantic Energy)
+- [x] Experiment protocol design (temporal split, metrics, evaluation pipeline)
+- [ ] Modify 3.0-detection-model-training.py for multi-dataset loading + stratified split + save model
+- [ ] Create 4.0-model-evaluation.py for OOD evaluation on 2026 data
 - [ ] Run full pipeline end-to-end on 2-3 MoE models
 - [ ] Decide on cumulative vs non-cumulative default for experiment scripts

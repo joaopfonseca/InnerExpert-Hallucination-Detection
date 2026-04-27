@@ -8,6 +8,10 @@
 
 The simplest uncertainty baseline: compute the entropy of the model's predicted token probability distribution at each position. High entropy → high uncertainty. If we can't beat this, nothing else matters. Dead simple to implement, sets the floor.
 
+**How it works:** For each token position t, compute H_t = −Σ_v p(v | x_{<t}) log p(v | x_{<t}), then aggregate across the answer (typically mean or max). The aggregated score serves as the uncertainty estimate — higher entropy means the model is less confident about what comes next, suggesting a higher likelihood of hallucination.
+
+**Paper:** Standard entropy-based uncertainty (no single paper; see e.g., Malinin & Gales, 2020)
+
 **Rhetorical purpose:** Floor — can you beat the simplest approach?
 
 #### 2. Semantic Uncertainty (Kuhn et al., 2023 / Nature 2024)
@@ -37,7 +41,18 @@ The current gold standard for training-free hallucination detection. Published i
 
 #### 3. SelfCheckGPT (Manakul et al., EMNLP 2023)
 
-Detects hallucinations by measuring consistency across multiple sampled generations. The paper proposes five variants (BERTScore, QA, n-gram, NLI, Prompt), with **Prompt** being the strongest overall and **NLI** offering the best performance-computation tradeoff. We implement NLI and Prompt as the two most relevant variants for comparison.
+Detects hallucinations by measuring **consistency across multiple sampled generations**. The core idea: if the model gives the same answer across different samples, it "knows" the answer. If answers contradict each other, the model is guessing.
+
+**How it works:**
+
+1. **Sample N responses** per question with temperature > 0
+2. **Split responses into sentences**
+3. **For each sentence**, check consistency against all other responses:
+   - **NLI variant:** Use a natural language inference model (e.g., DeBERTa-v3-large MNLI) to check if each sampled passage supports, contradicts, or is neutral to the target sentence
+   - **Prompt variant:** Ask an LLM (GPT-3.5/GPT-4) to judge whether the target sentence is supported by the sampled passages
+4. **Aggregate** consistency scores across sentences → answer-level score
+
+The paper proposes five variants (BERTScore, QA, n-gram, NLI, Prompt). **Prompt** achieves the best performance (AUC-PR 93.42) but requires an LLM call. **NLI** offers the best performance-computation tradeoff (AUC-PR 92.50). We implement both as the two most relevant variants.
 
 **Paper:** *SelfCheckGPT: Zero-Resource Black-Box Hallucination Detection for Generative Large Language Models* (EMNLP 2023)
 **Code:** https://github.com/potsawee/selfcheckgpt (pip: `selfcheckgpt`)
