@@ -30,54 +30,13 @@ from typing import Dict, List, Optional, Tuple
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
-from moeuncert.baselines import (
-    PredictiveEntropy,
-    LLMCheck,
-    SemanticUncertainty,
-    SemanticEnergy,
-)
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
     load_multi_year_data,
     optimal_threshold,
+    stratified_group_split,
 )
-from moeuncert.metrics import compute_metrics
-
-
-def stratified_group_split(
-    y: np.ndarray,
-    groups: np.ndarray,
-    test_size: float = 0.1,
-    random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Stratified train/val split grouped by question_id."""
-    from sklearn.model_selection import StratifiedShuffleSplit
-    
-    unique_groups = np.unique(groups)
-    group_labels = np.array([
-        int(y[groups == g].max()) for g in unique_groups
-    ])
-
-    sss = StratifiedShuffleSplit(
-        n_splits=1, test_size=test_size, random_state=random_state
-    )
-    train_group_idx, val_group_idx = next(
-        sss.split(unique_groups, group_labels)
-    )
-
-    train_groups = unique_groups[train_group_idx]
-    val_groups = unique_groups[val_group_idx]
-
-    train_mask = np.isin(groups, train_groups)
-    val_mask = np.isin(groups, val_groups)
-
-    print(f"  Stratified split: {len(train_groups)} groups train, "
-          f"{len(val_groups)} groups val")
-    print(f"  Train hallucination rate: {y[train_mask].mean():.1%}")
-    print(f"  Val hallucination rate: {y[val_mask].mean():.1%}")
-
-    return train_mask, val_mask
 
 
 def extract_answer_level_labels(df_labeled: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -139,8 +98,6 @@ def fit_predictive_entropy(
     """Fit PredictiveEntropy baseline and return threshold."""
     print(f"\n--- PredictiveEntropy (aggregation={aggregation}) ---")
     
-    baseline = PredictiveEntropy()
-    
     # Extract scores from outputs
     scores_tensor = outputs['scores']  # (n_samples, seq_len, vocab_size)
     
@@ -163,14 +120,21 @@ def fit_predictive_entropy(
     qid_to_label = dict(zip(label_qids, labels))
     matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
     
-    # Fit threshold
-    baseline.fit(agg_scores, matched_labels)
+    # Fit threshold using optimal_threshold utility (maximizes accuracy)
+    threshold, acc = optimal_threshold(matched_labels, agg_scores)
     
-    print(f"  Optimal threshold: {baseline.threshold:.4f}")
+    # Compute AUROC for reference
+    if len(np.unique(matched_labels)) > 1:
+        auroc = roc_auc_score(matched_labels, agg_scores)
+    else:
+        auroc = 0.5
+    
+    print(f"  Optimal threshold: {threshold:.4f} (accuracy: {acc:.4f}, AUROC: {auroc:.4f})")
     
     return {
-        "threshold": float(baseline.threshold),
+        "threshold": float(threshold),
         "aggregation": aggregation,
+        "auroc": float(auroc),
     }
 
 
@@ -226,21 +190,22 @@ def fit_llm_check(
         
         print(f"  Best layer: {best_layer} (AUROC: {best_auroc:.4f})")
         
-        # Fit threshold on best layer
-        best_layer_scores = scores[:, best_layer, :].numpy().flatten()
-        best_layer_qids = np.repeat(qids, scores.shape[2])
-        unique_qids, agg_scores = aggregate_token_to_answer(
-            best_layer_scores, best_layer_qids, aggregation=aggregation
-        )
-        matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
+        # Fit threshold on best layer using optimal_threshold
+        threshold, acc = optimal_threshold(matched_labels, agg_scores)
         
-        baseline.fit(agg_scores, matched_labels)
+        if len(np.unique(matched_labels)) > 1:
+            layer_auroc = roc_auc_score(matched_labels, agg_scores)
+        else:
+            layer_auroc = 0.5
+        
+        print(f"  Optimal threshold: {threshold:.4f} (accuracy: {acc:.4f}, AUROC: {layer_auroc:.4f})")
         
         return {
-            "threshold": float(baseline.threshold),
+            "threshold": float(threshold),
             "layer": int(best_layer),
             "aggregation": aggregation,
             "auroc": float(best_auroc),
+            "layer_auroc": float(layer_auroc),
         }
     
     elif score_type == "perplexity":
