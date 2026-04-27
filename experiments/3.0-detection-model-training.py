@@ -57,7 +57,6 @@ try:
 except NameError:
     pass
 
-from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,

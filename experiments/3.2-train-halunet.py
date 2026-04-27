@@ -117,13 +117,16 @@ def extract_halunet_features(
 
         gen_len = gen_end - gen_start
 
+        if gen_len <= 0:
+            continue
+
         # Extract features for generated tokens
         ll = outputs["log_likelihoods"][idx, :gen_len].numpy()
         ent = outputs["entropies"][idx, :gen_len].numpy()
 
         # Hidden states: shape (seq_len, n_layers, hidden_size)
         # Use last layer embeddings
-        hidden = outputs["hidden_states"][idx, :gen_len, -1, :].numpy()
+        hidden = outputs["hidden_states"][idx, gen_start:gen_end, -1, :].numpy()
 
         log_likelihoods_list.append(ll)
         entropies_list.append(ent)
