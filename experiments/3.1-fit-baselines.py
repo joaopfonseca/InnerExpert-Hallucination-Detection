@@ -121,7 +121,7 @@ def fit_predictive_entropy(
     matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
     
     # Fit threshold using optimal_threshold utility (maximizes accuracy)
-    threshold, acc = optimal_threshold(matched_labels, agg_scores)
+    threshold, f1 = optimal_threshold(matched_labels, agg_scores)
     
     # Compute AUROC for reference
     if len(np.unique(matched_labels)) > 1:
@@ -129,7 +129,7 @@ def fit_predictive_entropy(
     else:
         auroc = 0.5
     
-    print(f"  Optimal threshold: {threshold:.4f} (accuracy: {acc:.4f}, AUROC: {auroc:.4f})")
+    print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
     
     return {
         "threshold": float(threshold),
@@ -189,14 +189,14 @@ def fit_llm_check(
         print(f"  Best layer: {best_layer} (AUROC: {best_auroc:.4f})")
         
         # Fit threshold on best layer using optimal_threshold
-        threshold, acc = optimal_threshold(matched_labels, agg_scores)
+        threshold, f1 = optimal_threshold(matched_labels, agg_scores)
         
         if len(np.unique(matched_labels)) > 1:
             layer_auroc = roc_auc_score(matched_labels, agg_scores)
         else:
             layer_auroc = 0.5
         
-        print(f"  Optimal threshold: {threshold:.4f} (accuracy: {acc:.4f}, AUROC: {layer_auroc:.4f})")
+        print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {layer_auroc:.4f})")
         
         return {
             "threshold": float(threshold),
@@ -231,7 +231,7 @@ def fit_llm_check(
         
         matched_labels = np.array([qid_to_label[qid] for qid in qids])
         
-        threshold, acc = optimal_threshold(matched_labels, perplexities.numpy())
+        threshold, f1 = optimal_threshold(matched_labels, perplexities.numpy())
         auroc = roc_auc_score(matched_labels, perplexities.numpy()) if len(np.unique(matched_labels)) > 1 else 0.5
         
         return {
@@ -252,7 +252,7 @@ def fit_llm_check(
         )
         matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
         
-        threshold, acc = optimal_threshold(matched_labels, agg_scores)
+        threshold, f1 = optimal_threshold(matched_labels, agg_scores)
         auroc = roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
         
         return {

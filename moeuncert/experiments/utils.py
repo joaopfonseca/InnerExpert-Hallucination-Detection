@@ -128,13 +128,40 @@ def get_quantization_kwargs(quantize: str) -> dict:
         raise ValueError(f"Unknown quantization level: {quantize}. Choose from '16-bit', '8-bit', or '4-bit'.")
 
 
-def optimal_threshold(y_true, scores):
-    """Return the score threshold that maximises accuracy."""
-    fpr, tpr, thresholds = roc_curve(y_true, scores)
-    n_pos, n_neg = y_true.sum(), len(y_true) - y_true.sum()
-    acc = (tpr * n_pos + (1 - fpr) * n_neg) / len(y_true)
-    best = np.argmax(acc)
-    return thresholds[best], acc[best]
+def optimal_threshold(y_true, scores, metric="f1"):
+    """Return the score threshold that maximises the specified metric.
+
+    Args:
+        y_true: True binary labels.
+        scores: Predicted scores.
+        metric: Metric to optimize. "f1" or "accuracy". Default "f1".
+
+    Returns:
+        Tuple of (optimal_threshold, best_metric_value).
+    """
+    from sklearn.metrics import precision_recall_curve
+
+    if metric == "f1":
+        precisions, recalls, thresholds = precision_recall_curve(y_true, scores)
+        # precision_recall_curve returns one more threshold than precisions/recalls
+        # so we need to trim
+        f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
+        best_idx = np.argmax(f1_scores)
+        # Handle the case where best_idx equals len(thresholds)
+        if best_idx >= len(thresholds):
+            best_threshold = thresholds[-1] if len(thresholds) > 0 else 0.5
+        else:
+            best_threshold = thresholds[best_idx]
+        best_value = f1_scores[best_idx]
+        return best_threshold, best_value
+    elif metric == "accuracy":
+        fpr, tpr, thresholds = roc_curve(y_true, scores)
+        n_pos, n_neg = y_true.sum(), len(y_true) - y_true.sum()
+        acc = (tpr * n_pos + (1 - fpr) * n_neg) / len(y_true)
+        best_idx = np.argmax(acc)
+        return thresholds[best_idx], acc[best_idx]
+    else:
+        raise ValueError(f"Unknown metric: {metric}. Use 'f1' or 'accuracy'.")
 
 
 def stratified_group_split(
