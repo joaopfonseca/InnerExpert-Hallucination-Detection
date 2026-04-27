@@ -41,7 +41,7 @@
 - [x] Experiment protocol design (temporal split, metrics, evaluation pipeline)
 - [x] Modify 3.0-detection-model-training.py for multi-dataset loading + stratified split + save model
 - [x] Feature normalization: StandardScaler for all features except expert_usage ratios
-- [ ] Create 3.1-fit-baselines.py — fit thresholds for PE/LLM-Check/SU/SE on train data, save to thresholds.json
+- [x] Create 3.1-fit-baselines.py — fit thresholds for PE/LLM-Check/SU/SE on train data, save to thresholds.json
 - [ ] Create 4.0-model-evaluation.py — inference on test data (2026), run all methods, save raw predictions to predictions/<method>.parquet
 - [ ] Create 5.0-results-analysis.py — compute AUROC/AUPRC/F1/Accuracy/TPR@5%FPR, generate comparison tables + ROC curves + calibration plots
 - [ ] Run full pipeline end-to-end on 2-3 MoE models
