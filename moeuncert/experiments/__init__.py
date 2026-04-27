@@ -13,6 +13,11 @@ from .utils import (
     get_quantization_kwargs,
     read_and_collate_outputs,
 )
+from .data_loading import (
+    load_labeled_dataset,
+    load_model_outputs,
+    load_multi_year_data,
+)
 
 
 __all__ = [
@@ -25,4 +30,7 @@ __all__ = [
     "optimal_threshold",
     "get_quantization_kwargs",
     "read_and_collate_outputs",
+    "load_labeled_dataset",
+    "load_model_outputs",
+    "load_multi_year_data",
 ]
