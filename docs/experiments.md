@@ -1,0 +1,174 @@
+# Experiment Protocol
+
+This document describes the experimental design for training and evaluating the MoE hallucination detector and all baselines.
+
+## Train / Validation / Test Split
+
+### Temporal Split (Primary)
+
+Given the temporal nature of RealtimeQA, we use a **strict temporal split**:
+
+- **Training data:** RealtimeQA 2022–2025 (all available years except 2026)
+  - Largest possible training corpus
+  - Historical events are "in-distribution" knowledge for the model
+- **Validation data:** Random stratified split (by `question_id`) from the training years
+  - Used for hyperparameter tuning and threshold calibration
+  - Grouped by `question_id`: all responses to the same question stay in the same split
+- **Test data:** RealtimeQA 2026 (future events, genuinely OOD)
+  - The model was trained before 2026, making these questions knowledge-out-of-distribution
+  - This is the **headline evaluation** — temporal generalization is the core claim
+
+### Why Temporal Split?
+
+- **No data leakage:** Questions from different years are independent
+- **Realistic deployment scenario:** Train once, evaluate on future data
+- **Stronger than random split:** Temporal OOD is harder than in-domain random splitting
+
+### Split by `question_id`
+
+For both the train/val split and the temporal split, we **group by `question_id`**:
+- All sampled responses for a single question go to the same split
+- Prevents leakage: a question's samples shouldn't be split across train and test
+
+## Evaluation Metrics
+
+### Primary Metrics (Reported for All Methods)
+
+| Metric | Description | Why It Matters |
+|---|---|---|
+| **F1-Score** | Harmonic mean of precision and recall | **Hyperparameter tuning objective** — balances false positives and false negatives |
+| **AUROC** | Area under ROC curve | Overall discrimination ability, threshold-independent |
+| **TPR @ 5% FPR** | True positive rate when false positive rate = 5% | Safety-critical: how well do we catch hallucinations with very few false alarms? |
+| **Accuracy** | Overall correct classification rate | Simple interpretability |
+
+### Additional Metrics (Reported for Completeness)
+
+- **AUPRC** (Area under precision-recall curve) — important for class-imbalanced settings
+- **Calibration curves** — reliability diagrams showing whether predicted probabilities match actual accuracy
+- **ECE** (Expected Calibration Error) — scalar calibration metric
+
+### Per-Baseline Reporting
+
+Each baseline is evaluated on **all four primary metrics** on the test set (2026). Results are presented as:
+- A comparison table (baseline × metric)
+- ROC curves (all baselines overlaid)
+- Calibration plots (per baseline)
+
+## Hyperparameter Tuning
+
+### Tuning Objective
+
+**F1-Score on the validation split** (2022–2025, held out from training).
+
+Why F1?
+- Balances precision and recall
+- More informative than accuracy when classes are imbalanced
+- Standard choice for binary detection tasks
+
+### Tuning Procedure
+
+1. **Your MoE detector:** Grid search over classifier hyperparameters (logistic regression C, MLP hidden layers, XGBoost depth) on train split, evaluate on val split
+2. **Threshold baselines (PE, LLM-Check, SU, SE):** Fit threshold on train split (using the full 2022-2025 for stability), report val performance for sanity-check
+3. **HaluNet:** Train on train split, early stopping on val split, save best checkpoint
+4. **SelfCheckGPT:** No tuning needed (pure inference)
+
+### Saved Artifacts
+
+After tuning:
+- Your detector: `detector.pkl` (pickled sklearn pipeline)
+- HaluNet: `halunet.pt` (PyTorch checkpoint)
+- Threshold baselines: `thresholds.json` (one threshold per baseline)
+- Val results: `val_results.json` (for appendix)
+
+## OOD Evaluation (Main Result)
+
+### Script: `4.0-model-evaluation.py`
+
+This script runs the **headline evaluation** on the 2026 test set:
+
+1. **Load saved models**
+   - Your detector (from `detector.pkl`)
+   - HaluNet (from `halunet.pt`)
+   - Threshold baselines (from `thresholds.json`)
+
+2. **Load test data**
+   - Single-generation outputs (for PE, LLM-Check, HaluNet)
+   - Sampled-generation outputs (for SU, SE, SelfCheckGPT)
+   - Labels (from ROUGE/BLEU threshold or LLM-as-Judge)
+
+3. **Run all baselines**
+   - Extract features per baseline
+   - Apply saved thresholds/models
+   - Get predictions and probabilities
+
+4. **Compute metrics**
+   - AUROC, AUPRC, F1, TPR@5%FPR, Accuracy
+   - Calibration curves
+
+5. **Generate outputs**
+   - `comparison_table.md` — markdown table of all results
+   - `roc_curves.png` — overlaid ROC curves
+   - `calibration_plots.png` — per-baseline calibration
+   - `results.json` — raw numbers for the paper
+
+## Cross-Dataset Evaluation (Future Work)
+
+After validating on RealtimeQA 2026, the saved detector will be tested on:
+- SQuAD
+- TriviaQA
+- Natural Questions
+- HotpotQA
+- HaluEval
+
+This tests whether MoE routing signals generalize across **task types** (not just temporal domains).
+
+## Scripts Overview
+
+| Script | Purpose | Data Used |
+|---|---|---|
+| `1.0-generate-answers.py` | Single-pass generation | Train/Val/Test |
+| `1.1-generate-baseline-samples.py` | Multi-sample generation | Train/Val/Test |
+| `2.0-make-labels.py` | Generate hallucination labels | All |
+| `3.0-detection-model-training.py` | Train detector + tune baselines | Train + Val |
+| `4.0-model-evaluation.py` | OOD evaluation (headline result) | Test (2026) |
+
+## Implementation Notes
+
+### Threshold Baselines
+
+Four baselines require threshold calibration:
+- PredictiveEntropy
+- LLM-Check
+- SemanticUncertainty
+- SemanticEnergy
+
+For each:
+1. Extract features from saved outputs on **train split**
+2. Run `baseline.fit(features, labels)` → saves optimal threshold
+3. Save threshold to `thresholds.json`
+
+### SelfCheckGPT
+
+Requires no training — just needs the sampled-generation data. Evaluation extracts:
+- `sentences`: target response split into sentences
+- `sampled_passages`: N sampled responses as strings
+
+### HaluNet
+
+Requires training:
+1. Extract `log_likelihoods`, `entropies`, `embeddings` from saved outputs
+2. Train on train split, validate on val split
+3. Save best checkpoint to `halunet.pt`
+
+### Feature Extraction
+
+Each baseline needs different features from the saved `.pt` outputs:
+
+| Baseline | Required Features | Source |
+|---|---|---|
+| PredictiveEntropy | `scores` (output logits) | `compute_metrics()` |
+| LLM-Check | `hidden_states`, `attentions`, `scores` | `compute_metrics()` |
+| SemanticUncertainty | Sampled responses + `log_probs` | `1.1-generate-baseline-samples.py` |
+| SemanticEnergy | Sampled responses + logits + clusters | `1.1-generate-baseline-samples.py` |
+| SelfCheckGPT | Sentences + sampled passages | `1.1-generate-baseline-samples.py` |
+| HaluNet | `log_likelihoods`, `entropies`, `embeddings` | `compute_metrics(return_baseline_features=True)` |
