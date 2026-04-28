@@ -16,8 +16,9 @@ Answer-level labeling combines:
 - Optional LLM-based evaluation through DeepInfra
 
 For each non-binary metric, thresholds are estimated from base vs RAG
-separability (same principle used in `3.1-analyze-metrics.py`, via ROC-derived
-accuracy-optimal thresholds). These metric-level hallucination flags are then
+separability (same principle used in `3.1-analyze-metrics.py`, via
+F1-optimal thresholds from precision-recall curves). These metric-level
+hallucination flags are then
 combined with evidence presence to create weak answer-level labels.
 
 When OpenAI labels are provided, the a logistic regression classifier is trained
@@ -107,9 +108,9 @@ def compute_metric_thresholds(
     thresholds = {}
     for col in metric_cols:
         scores = df[col].to_numpy()
-        threshold, acc = optimal_threshold(y_true, scores)
+        threshold, f1 = optimal_threshold(y_true, scores)
         direction = "ge" if scores[y_true == 1].mean() >= scores[y_true == 0].mean() else "lt"
-        thresholds[col] = {"threshold": threshold, "direction": direction, "accuracy": acc}
+        thresholds[col] = {"threshold": threshold, "direction": direction, "f1": f1}
     return thresholds
 
 

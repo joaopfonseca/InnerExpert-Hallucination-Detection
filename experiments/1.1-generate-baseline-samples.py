@@ -83,6 +83,20 @@ def run_batch_sampling(tokenized_dataset, model_monitor, tokenizer, batch_size=2
         for i in tqdm(list(range(0, len(tokenized_dataset), batch_size)),
                       desc="Sampling batches"):
 
+            batch_idx = i // batch_size
+
+            # Check if batch outputs already exist (resumption support)
+            if save_path is not None:
+                filename = (
+                    f"sampled_outputs__batch_{batch_idx}"
+                    f"_of_{total_batches}"
+                    f"__batch_size_{batch_size}"
+                    f"__num_samples_{num_samples}.pt"
+                )
+                if (save_path / filename).exists():
+                    print(f"Batch {batch_idx} already exists, skipping.")
+                    continue
+
             batch = tokenized_dataset[i:i + batch_size]
             batch_size_actual = len(batch["input_ids"])
 

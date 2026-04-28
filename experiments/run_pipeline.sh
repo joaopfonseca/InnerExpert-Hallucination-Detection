@@ -44,6 +44,13 @@ MAX_LLM_TOKEN_SAMPLES=""        # Limit LLM token queries (empty = all)
 # --- COMPUTATION FLAGS ---
 RETURN_BASELINE_FEATURES=true   # Set to true to compute log-likelihoods + entropies for HaluNet
 
+# Build compute_metrics flags from RETURN_BASELINE_FEATURES
+if [ "${RETURN_BASELINE_FEATURES}" = true ]; then
+    BASELINE_FEAT_FLAGS="--return-baseline-features"
+else
+    BASELINE_FEAT_FLAGS=""
+fi
+
 # --- PATHS ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENTS_DIR="${SCRIPT_DIR}/experiments"
@@ -76,7 +83,8 @@ run_script "1.0-generate-answers.py" \
     --years "${YEARS[@]}" \
     $( [ -n "${MONTH}" ] && echo "--month ${MONTH}" ) \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
-    --batch-size "${BATCH_SIZE}"
+    --batch-size "${BATCH_SIZE}" \
+    ${BASELINE_FEAT_FLAGS}
 
 # ============================================================================
 # STEP 2: Generate sampled responses (for sampling-based baselines)

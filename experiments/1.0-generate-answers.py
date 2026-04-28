@@ -40,7 +40,8 @@ from moeuncert.experiments import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size=2, save_path=None, max_new_tokens=65):
+def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size=2, save_path=None, max_new_tokens=65,
+                         return_baseline_features=False):
     """Run batched generation over a tokenized dataset, returning collated outputs.
     
     Parameters
@@ -179,6 +180,12 @@ if __name__ == "__main__":
         type=int,
         default=65,
         help="Maximum number of new tokens to generate per answer (default: 65).",
+    )
+    parser.add_argument(
+        "--return-baseline-features",
+        action="store_true",
+        help="If set, also compute log-likelihoods and full-vocabulary entropies "
+             "needed by trainable baselines (e.g., HaluNet).",
     )
     args = parser.parse_args()
 

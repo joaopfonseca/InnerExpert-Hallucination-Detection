@@ -208,10 +208,12 @@ def expert_similarity_score(expert_hidden_states, expert_weights):
 
 def expert_usage_frequency(expert_idx, weights=None):
     """
-    Compute how often each expert is selected across all tokens in a batch.
+    Compute cumulative expert usage proportions across the sequence.
 
-    Counts the total number of times each expert is routed to, summing over
-    both token positions and the top-k selections per token.
+    Returns a tensor where each position represents the cumulative proportion
+    of times each expert has been selected up to that token, normalized by
+    the cumulative total selections so far. This captures how the routing
+    distribution evolves over the generated sequence.
 
     Args:
         expert_idx: Integer tensor of selected expert indices with shape
@@ -221,8 +223,8 @@ def expert_usage_frequency(expert_idx, weights=None):
             weighted usage score instead of raw frequency
 
     Returns:
-        Integer tensor of expert selection counts with shape
-        (batch_size, n_layers, n_experts)
+        Float tensor of cumulative expert usage proportions with shape
+        (batch_size, sequence_length, n_layers, n_experts)
     """
     expert_usage = torch.nn.functional.one_hot(
         expert_idx, num_classes=expert_idx.max() + 1

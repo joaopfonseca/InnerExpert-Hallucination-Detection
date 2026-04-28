@@ -301,7 +301,7 @@ class SemanticUncertainty(BaseBaseline):
         cluster_probs = np.exp(log_cluster_probs)
 
         # Compute entropy over cluster probabilities
-        entropy = -np.sum(cluster_probs * np.log(cluster_probs + 1e-12))
+        entropy = -np.sum(cluster_probs * np.log(cluster_probs + 1e-10))
         return entropy
 
     def fit(self, responses_list, log_probs_list, labels, example=None):
@@ -331,13 +331,19 @@ class SemanticUncertainty(BaseBaseline):
             labels_np = np.array(labels, dtype=float)
 
         best_threshold = 0.5
-        best_accuracy = 0.0
+        best_f1 = 0.0
 
         for threshold in np.linspace(scores.min(), scores.max(), 100):
             preds = (scores >= threshold).astype(int)
-            accuracy = (preds == labels_np).mean()
-            if accuracy > best_accuracy:
-                best_accuracy = accuracy
+            # Use F1 score as the optimization metric (consistent with protocol)
+            tp = ((preds == 1) & (labels_np == 1)).sum()
+            fp = ((preds == 1) & (labels_np == 0)).sum()
+            fn = ((preds == 0) & (labels_np == 1)).sum()
+            precision = tp / (tp + fp + 1e-10)
+            recall = tp / (tp + fn + 1e-10)
+            f1 = 2 * precision * recall / (precision + recall + 1e-10)
+            if f1 > best_f1:
+                best_f1 = f1
                 best_threshold = threshold
 
         self.threshold = best_threshold

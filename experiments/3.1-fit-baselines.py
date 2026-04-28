@@ -103,7 +103,7 @@ def fit_predictive_entropy(
     
     # Compute per-token entropy
     probs = torch.softmax(scores_tensor, dim=-1)
-    entropies = -(probs * torch.log(probs + 1e-12)).sum(dim=-1)  # (n_samples, seq_len)
+    entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)  # (n_samples, seq_len)
     
     # Get question_ids and align with labels
     qids = outputs['question_id'].numpy()
@@ -207,8 +207,8 @@ def fit_llm_check(
         }
     
     elif score_type == "perplexity":
-        # Answer-level directly
-        # Need to compute from scores
+        # Answer-level directly — aggregation parameter is a no-op here
+        # (perplexity is inherently a single scalar per answer)
         scores = outputs['scores']  # (n_samples, seq_len, vocab_size)
         sequences = outputs['sequences']  # (n_samples, total_seq_len)
         
@@ -237,13 +237,14 @@ def fit_llm_check(
         return {
             "threshold": float(threshold),
             "aggregation": aggregation,
+            "auroc": float(auroc),
         }
     
     elif score_type == "entropy":
         # Per-token entropy, aggregate to answer
         scores = outputs['scores']
         probs = torch.softmax(scores, dim=-1)
-        entropies = -(probs * torch.log(probs + 1e-12)).sum(dim=-1)
+        entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
         
         unique_qids, agg_scores = aggregate_token_to_answer(
             entropies.numpy().flatten(),

@@ -69,7 +69,9 @@ def extract_halunet_features(
             f"Ensure compute_metrics(return_baseline_features=True) was used during generation."
         )
 
-    qid_to_idx = {qid.item(): idx for idx, qid in enumerate(outputs["question_id"])}
+    # Build a mapping from string question ID to positional index.
+    all_qids = outputs["question_id"]  # list of strings
+    qid_to_idx = {qid: i for i, qid in enumerate(all_qids)}
 
     log_likelihoods_list = []
     entropies_list = []

@@ -154,7 +154,7 @@ if __name__ == "__main__":
     plt.close()
 
     #############################################################################
-    # Confusion matrices at accuracy-optimal threshold
+    # Confusion matrices at F1-optimal threshold
     classifiers = [(col, stacked[col].values) for col in BASE_COLS]
     classifiers.append(("logistic\nregression", lr_scores))
 
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(1, n, figsize=(3 * n, 4))
 
     for ax, (name, scores) in zip(axes, classifiers):
-        thresh, acc = optimal_threshold(y, scores)
+        thresh, f1 = optimal_threshold(y, scores)
         y_pred = (scores >= thresh).astype(int)
         cm = confusion_matrix(y, y_pred)
         sns.heatmap(
@@ -174,7 +174,7 @@ if __name__ == "__main__":
             xticklabels=["Pred 0", "Pred 1"],
             yticklabels=["True 0", "True 1"],
         )
-        ax.set_title(f"{name}\nthresh={thresh:.2f}  acc={acc:.2f}", fontsize=8)
+        ax.set_title(f"{name}\nthresh={thresh:.2f}  F1={f1:.2f}", fontsize=8)
 
     plt.tight_layout()
     plt.savefig(figures_dir / "confusion_matrices.png", dpi=150)
