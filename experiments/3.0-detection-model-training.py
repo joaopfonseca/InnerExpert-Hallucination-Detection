@@ -231,19 +231,23 @@ def prepare_training_data(
     if 'question_id' not in all_outputs:
         raise ValueError("all_outputs must contain 'question_id' for alignment")
 
-    qid_to_idx = {qid.item(): idx for idx, qid in enumerate(all_outputs['question_id'])}
+    # Build a mapping from string question ID to positional index.
+    # question_ids are strings like "20240105_0" — unique across years.
+    all_qids = all_outputs['question_id']  # list of strings
+    qid_to_int = {qid: i for i, qid in enumerate(all_qids)}
+    tensor_qids = torch.tensor([qid_to_int[q] for q in all_qids], dtype=torch.long)
 
     features_list = []
     labels_list = []
     confidence_list = []
 
     for _, row in tqdm(df_labeled.iterrows(), total=len(df_labeled), desc="  Processing"):
-        question_id = row['question_id']
+        question_id = str(row['question_id'])
 
-        if question_id not in qid_to_idx:
+        if question_id not in qid_to_int:
             raise KeyError(f"Question ID {question_id} not found in model outputs.")
 
-        tensor_idx = qid_to_idx[question_id]
+        tensor_idx = qid_to_int[question_id]
         generated_text = row['generated_answer']
 
         tokenized = tokenizer(
@@ -276,7 +280,7 @@ def prepare_training_data(
             n_tokens,
         )
 
-        token_features['question_id'] = torch.full((n_tokens,), question_id, dtype=torch.long)
+        token_features['question_id'] = torch.full((n_tokens,), tensor_idx, dtype=torch.long)
         token_features['token_position'] = torch.arange(n_tokens, dtype=torch.long)
         token_features['evidence_present'] = torch.full(
             (n_tokens,), row['evidence_present'], dtype=torch.long

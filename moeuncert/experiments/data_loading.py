@@ -135,16 +135,15 @@ def load_multi_year_data(
     df_combined = pd.concat(all_dfs, ignore_index=True)
     print(f"\nCombined labeled data: {len(df_combined)} rows")
 
-    # Concatenate outputs with question_id offsetting
+    # Concatenate outputs (question IDs are already unique across years)
     combined_outputs = {}
     for key in all_outputs_list[0].keys():
         if key == "question_id":
-            offset_qids = []
-            for year, outputs in zip(years, all_outputs_list):
-                qids = outputs[key]
-                offset = year * 1_000_000
-                offset_qids.append(qids + offset)
-            combined_outputs[key] = torch.cat(offset_qids, dim=0)
+            # Flatten list-of-lists: each year's outputs have a list of strings
+            all_qids = []
+            for o in all_outputs_list:
+                all_qids.extend(o[key])
+            combined_outputs[key] = all_qids
         elif isinstance(all_outputs_list[0][key], torch.Tensor):
             combined_outputs[key] = torch.cat(
                 [o[key] for o in all_outputs_list], dim=0
