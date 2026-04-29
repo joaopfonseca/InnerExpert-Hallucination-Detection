@@ -52,6 +52,12 @@ def load_labeled_dataset(
 def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
     """Load and collate model outputs from .pt batch files.
 
+    Loads base_generation/ and evidence_generation/ directories separately so
+    that an ``evidence_present`` boolean list can be added to the returned dict
+    (False for base outputs, True for evidence/RAG outputs).  This allows
+    downstream code to build composite ``(question_id, evidence_present)`` keys
+    and avoid collisions when the same question has both modes.
+
     Parameters
     ----------
     data_dir : Path
@@ -59,23 +65,51 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
 
     Returns
     -------
-    Dict[str, torch.Tensor]
-        Collated outputs from all batches.
+    Dict[str, any]
+        Collated outputs from all batches, including an ``evidence_present``
+        list field.
     """
     from .utils import read_and_collate_outputs
 
     base_dir = data_dir / "base_generation"
     evidence_dir = data_dir / "evidence_generation"
 
-    batch_files = []
-    for d in [base_dir, evidence_dir]:
-        if d.exists():
-            batch_files.extend(sorted(d.glob("model_outputs__batch_*.pt")))
+    parts: List[Dict] = []
+    for d, is_evidence in [(base_dir, False), (evidence_dir, True)]:
+        if not d.exists():
+            continue
+        files = sorted(d.glob("model_outputs__batch_*.pt"))
+        if not files:
+            continue
+        part = read_and_collate_outputs(files, tokenizer=None, get_keys=None)
+        # Determine entry count from question_id list or first tensor.
+        n = len(part.get("question_id", []))
+        if n == 0:
+            for val in part.values():
+                if isinstance(val, torch.Tensor):
+                    n = val.shape[0]
+                    break
+        part["evidence_present"] = [is_evidence] * n
+        parts.append(part)
 
-    if not batch_files:
+    if not parts:
         raise FileNotFoundError(f"No batch output files found in {data_dir}")
 
-    return read_and_collate_outputs(batch_files, tokenizer=None, get_keys=None)
+    if len(parts) == 1:
+        return parts[0]
+
+    # Merge base and evidence parts.
+    combined: Dict = {}
+    for key in parts[0].keys():
+        values = [p[key] for p in parts if key in p]
+        if all(isinstance(v, torch.Tensor) for v in values):
+            combined[key] = torch.cat(values, dim=0)
+        else:
+            merged: List = []
+            for v in values:
+                merged.extend(v)
+            combined[key] = merged
+    return combined
 
 
 def load_multi_year_data(
@@ -154,6 +188,12 @@ def load_multi_year_data(
             combined_outputs[key] = torch.cat(
                 [o[key] for o in all_outputs_list], dim=0
             )
+        elif isinstance(all_outputs_list[0][key], list):
+            # Extend all list-type fields (e.g., evidence_present) across years.
+            merged_list: List = []
+            for o in all_outputs_list:
+                merged_list.extend(o[key])
+            combined_outputs[key] = merged_list
         else:
             combined_outputs[key] = all_outputs_list[0][key]
 
