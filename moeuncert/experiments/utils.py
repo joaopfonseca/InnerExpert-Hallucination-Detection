@@ -254,8 +254,11 @@ def compute_metrics_at_threshold(
     acc = accuracy_score(y_true, y_pred)
 
     # TPR @ 5% FPR
-    fpr, tpr, _ = roc_curve(y_true, y_proba)
-    tpr_at_5fpr = np.interp(0.05, fpr, tpr) if len(fpr) > 0 else 0.0
+    if len(np.unique(y_true)) > 1:
+        fpr, tpr, _ = roc_curve(y_true, y_proba)
+        tpr_at_5fpr = np.interp(0.05, fpr, tpr)
+    else:
+        tpr_at_5fpr = 0.0
 
     return {
         "auroc": float(auroc),
