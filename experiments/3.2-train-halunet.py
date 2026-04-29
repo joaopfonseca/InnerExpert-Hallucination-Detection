@@ -279,11 +279,27 @@ def main():
     print("TRAIN/VAL SPLIT")
     print(f"{'=' * 70}")
 
-    # Generate question_ids for splitting (one per answer)
-    answer_qids = np.arange(len(labels))
+    # Group split by the real per-answer question ids so all rows for the same
+    # question stay in the same split.
+    if "question_id" not in df_labeled.columns:
+        raise KeyError("df_labeled must contain a 'question_id' column for grouped splitting")
+
+    if len(df_labeled) != len(labels):
+        raise ValueError(
+            f"df_labeled/labels length mismatch: {len(df_labeled)} rows vs {len(labels)} labels"
+        )
+
+    answer_qids = df_labeled["question_id"].astype(str)
+
+    # If the dataset includes an evidence-mode flag, include it in the grouping
+    # key so variants of the same question/evidence setting are kept together.
+    for evidence_col in ("has_evidence", "with_evidence", "use_evidence", "rag", "use_rag"):
+        if evidence_col in df_labeled.columns:
+            answer_qids = answer_qids + "::" + df_labeled[evidence_col].astype(str)
+            break
 
     train_mask, val_mask = stratified_group_split(
-        labels, answer_qids, test_size=args.val_fraction, random_state=args.seed
+        labels, answer_qids.to_numpy(), test_size=args.val_fraction, random_state=args.seed
     )
 
     # Split features
