@@ -130,6 +130,16 @@ def _aggregate_token_to_answer(
     return unique_qids, np.array(aggregated)
 
 
+def _decode_sampled_responses(
+    tokenizer, responses_tokens: List[List[int]]
+) -> List[str]:
+    """Decode sampled response token IDs to strings."""
+    return [
+        tokenizer.decode(tokens, skip_special_tokens=True)
+        for tokens in responses_tokens
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Per-method evaluation functions
 # ---------------------------------------------------------------------------
@@ -237,7 +247,8 @@ def evaluate_llm_check(
                 token_logprobs = torch.gather(log_probs, dim=-1, index=gen_tokens).squeeze(-1)
                 perplexities[b] = torch.exp(-token_logprobs.mean()).item()
     else:
-        print("  WARNING: raw scores unavailable, perplexity set to 0 (requires raw scores).")
+        print("  WARNING: raw scores unavailable, perplexity set to NaN (requires raw scores).")
+        perplexities[:] = np.nan
 
     # --- Entropy ---
     # Use scores_entropy (top-k entropy) or recompute from raw scores
@@ -275,7 +286,7 @@ def evaluate_semantic_uncertainty(
     test_years: List[int],
     test_month: Optional[int],
     data_root: Path,
-    label_lookup: Dict[str, int],
+    num_samples: int = 5,
 ) -> pd.DataFrame:
     """Evaluate SemanticUncertainty on sampled test data.
 
@@ -285,7 +296,9 @@ def evaluate_semantic_uncertainty(
     from moeuncert.baselines.semantic_uncertainty import SemanticUncertainty
     from transformers import AutoTokenizer
 
-    sampled = load_sampled_outputs(data_root, test_years, test_month, model)
+    sampled = load_sampled_outputs(
+        data_root, test_years, test_month, model, num_samples=num_samples
+    )
     su = SemanticUncertainty()
     tokenizer = AutoTokenizer.from_pretrained(model)
 
@@ -294,16 +307,12 @@ def evaluate_semantic_uncertainty(
         logprobs = sampled["log_probs_by_qid"].get(qid, [])
         if not responses_tokens or len(responses_tokens) < 2:
             continue
-        # Decode token IDs to text for NLI
-        responses = [
-            tokenizer.decode(tokens, skip_special_tokens=True)
-            for tokens in responses_tokens
-        ]
+        responses = _decode_sampled_responses(tokenizer, responses_tokens)
         try:
             score = su.predict_proba(responses, logprobs)
             rows.append({"question_id": qid, "score": float(score)})
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"  WARNING: Failed SU for qid={qid}: {e}")
 
     return pd.DataFrame(rows)
 
@@ -313,7 +322,7 @@ def evaluate_semantic_energy(
     test_years: List[int],
     test_month: Optional[int],
     data_root: Path,
-    label_lookup: Dict[str, int],
+    num_samples: int = 5,
 ) -> pd.DataFrame:
     """Evaluate SemanticEnergy on sampled test data.
 
@@ -329,7 +338,9 @@ def evaluate_semantic_energy(
     )
     from transformers import AutoTokenizer
 
-    sampled = load_sampled_outputs(data_root, test_years, test_month, model)
+    sampled = load_sampled_outputs(
+        data_root, test_years, test_month, model, num_samples=num_samples
+    )
     su = SemanticUncertainty()
     se = SemanticEnergy()
     tokenizer = AutoTokenizer.from_pretrained(model)
@@ -343,11 +354,7 @@ def evaluate_semantic_energy(
             continue
 
         try:
-            # Decode token IDs to text for NLI clustering
-            responses = [
-                tokenizer.decode(tokens, skip_special_tokens=True)
-                for tokens in responses_tokens
-            ]
+            responses = _decode_sampled_responses(tokenizer, responses_tokens)
             # Cluster responses via NLI
             semantic_ids = su.cluster_responses(responses)
             clusters = semantic_ids_to_clusters(semantic_ids)
@@ -361,7 +368,8 @@ def evaluate_semantic_energy(
                 clusters=clusters,
             )
             rows.append({"question_id": qid, "score": float(score)})
-        except Exception:
+        except Exception as e:
+            print(f"  WARNING: Failed SEnergy for qid={qid}: {e}")
             continue
 
     return pd.DataFrame(rows)
@@ -373,6 +381,7 @@ def evaluate_selfcheck(
     test_month: Optional[int],
     data_root: Path,
     variant: str = "nli",
+    num_samples: int = 5,
 ) -> pd.DataFrame:
     """Evaluate SelfCheckGPT (NLI or Prompt variant) on sampled test data.
 
@@ -384,7 +393,9 @@ def evaluate_selfcheck(
     from moeuncert.baselines import SelfCheckNLI, SelfCheckPrompt
     from transformers import AutoTokenizer
 
-    sampled = load_sampled_outputs(data_root, test_years, test_month, model)
+    sampled = load_sampled_outputs(
+        data_root, test_years, test_month, model, num_samples=num_samples
+    )
     tokenizer = AutoTokenizer.from_pretrained(model)
 
     if variant == "nli":
@@ -398,20 +409,16 @@ def evaluate_selfcheck(
     for qid, responses_tokens in sampled["responses_by_qid"].items():
         if not responses_tokens or len(responses_tokens) < 2:
             continue
-        # Decode: first response is the target answer, rest are sampled passages
-        target = tokenizer.decode(responses_tokens[0], skip_special_tokens=True)
-        sampled_passages = [
-            tokenizer.decode(tokens, skip_special_tokens=True)
-            for tokens in responses_tokens[1:]
-        ]
-        if not sampled_passages:
-            continue
+        # First response is the target answer, rest are sampled passages
+        responses = _decode_sampled_responses(tokenizer, responses_tokens)
+        target = responses[0]
+        sampled_passages = responses[1:]
 
         try:
             scores = checker.predict_proba([target], sampled_passages)
-            answer_score = float(scores.mean())
-            rows.append({"question_id": qid, "score": answer_score})
-        except Exception:
+            rows.append({"question_id": qid, "score": float(scores.mean())})
+        except Exception as e:
+            print(f"  WARNING: Failed selfcheck_{variant} for qid={qid}: {e}")
             continue
 
     return pd.DataFrame(rows)
@@ -694,6 +701,18 @@ def main():
         "--skip-sampled", action="store_true",
         help="Skip methods that require multi-sample data (SU, SE, SelfCheckGPT)",
     )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=5,
+        help="Number of sampled responses per question for SU/SE/SelfCheck (default: 5)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature used during generation (default: 0.7)",
+    )
 
     args = parser.parse_args()
 
@@ -787,7 +806,7 @@ def main():
         try:
             su_df = evaluate_semantic_uncertainty(
                 args.model, args.test_years, args.test_month,
-                args.data_root, label_lookup,
+                args.data_root, num_samples=args.num_samples,
             )
             path = predictions_dir / "semantic_uncertainty.parquet"
             su_df.to_parquet(path, index=False)
@@ -800,7 +819,7 @@ def main():
         try:
             se_df = evaluate_semantic_energy(
                 args.model, args.test_years, args.test_month,
-                args.data_root, label_lookup,
+                args.data_root, num_samples=args.num_samples,
             )
             path = predictions_dir / "semantic_energy.parquet"
             se_df.to_parquet(path, index=False)
@@ -815,6 +834,7 @@ def main():
                 sc_df = evaluate_selfcheck(
                     args.model, args.test_years, args.test_month,
                     args.data_root, variant=variant,
+                    num_samples=args.num_samples,
                 )
                 path = predictions_dir / f"selfcheck_{variant}.parquet"
                 sc_df.to_parquet(path, index=False)
