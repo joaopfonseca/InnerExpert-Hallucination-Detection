@@ -95,7 +95,7 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
             outputs_processed = standardize_outputs(outputs, device="cpu")
             outputs_processed = {
                 "sequences": outputs_processed["sequences"],
-                **compute_metrics(outputs_processed)
+                **compute_metrics(outputs_processed, return_baseline_features=return_baseline_features)
             }
 
             del outputs
@@ -259,6 +259,7 @@ if __name__ == "__main__":
         batch_size, 
         save_path=base_gen_dir,
         max_new_tokens=args.max_new_tokens,
+        return_baseline_features=args.return_baseline_features,
     )
     print(f"Model outputs saved to {base_gen_dir}")
 
@@ -281,6 +282,7 @@ if __name__ == "__main__":
         batch_size, 
         save_path=evidence_gen_dir,
         max_new_tokens=args.max_new_tokens,
+        return_baseline_features=args.return_baseline_features,
     )
     print(f"Evidence-based outputs saved to {evidence_gen_dir}")
 
