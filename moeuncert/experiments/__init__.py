@@ -32,6 +32,8 @@ __all__ = [
     "optimal_threshold",
     "get_quantization_kwargs",
     "read_and_collate_outputs",
+    "stratified_group_split",
+    "compute_metrics_at_threshold",
     "load_labeled_dataset",
     "load_model_outputs",
     "load_multi_year_data",
