@@ -140,10 +140,15 @@ def load_multi_year_data(
     combined_outputs = {}
     for key in all_outputs_list[0].keys():
         if key == "question_id":
-            # Flatten list-of-lists: each year's outputs have a list of strings
-            all_qids = []
+            # Flatten any nested lists: batch files may store question_id as
+            # List[List[str]] so each extend() call could introduce a sub-list.
+            all_qids: List[str] = []
             for o in all_outputs_list:
-                all_qids.extend(o[key])
+                for item in o[key]:
+                    if isinstance(item, list):
+                        all_qids.extend(item)
+                    else:
+                        all_qids.append(item)
             combined_outputs[key] = all_qids
         elif isinstance(all_outputs_list[0][key], torch.Tensor):
             combined_outputs[key] = torch.cat(
@@ -151,6 +156,20 @@ def load_multi_year_data(
             )
         else:
             combined_outputs[key] = all_outputs_list[0][key]
+
+    # Sanity-check: question_id length must match the first tensor batch dimension.
+    if "question_id" in combined_outputs:
+        first_tensor_key = next(
+            (k for k in combined_outputs if isinstance(combined_outputs[k], torch.Tensor)),
+            None,
+        )
+        if first_tensor_key is not None:
+            n_tensor = combined_outputs[first_tensor_key].shape[0]
+            n_qids = len(combined_outputs["question_id"])
+            assert n_qids == n_tensor, (
+                f"question_id length ({n_qids}) does not match "
+                f"tensor batch size ({n_tensor})"
+            )
 
     return df_combined, combined_outputs
 
