@@ -66,6 +66,10 @@ def read_and_collate_outputs(
             all_outputs[key].extend(value)
 
     for key, value in all_outputs.items():
+        # Leave non-tensor values (e.g. question_id list of strings) as-is
+        if not isinstance(value[0], torch.Tensor):
+            all_outputs[key] = value
+            continue
         if all(v.shape == value[0].shape for v in value):
             all_outputs[key] = torch.concat(value, dim=0)
         else:
