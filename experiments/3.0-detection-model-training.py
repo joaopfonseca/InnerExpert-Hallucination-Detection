@@ -231,11 +231,14 @@ def prepare_training_data(
     if 'question_id' not in all_outputs:
         raise ValueError("all_outputs must contain 'question_id' for alignment")
 
-    # Build a mapping from string question ID to positional index.
-    # question_ids are strings like "20240105_0" — unique across years.
+    # Build a mapping from string question ID to a list of positional indices.
+    # The same question_id can appear twice when both base and evidence outputs
+    # are present; duplicates must be disambiguated via evidence_present.
+    from collections import defaultdict
     all_qids = all_outputs['question_id']  # list of strings
-    qid_to_int = {qid: i for i, qid in enumerate(all_qids)}
-    tensor_qids = torch.tensor([qid_to_int[q] for q in all_qids], dtype=torch.long)
+    qid_to_indices: dict = defaultdict(list)
+    for i, qid in enumerate(all_qids):
+        qid_to_indices[str(qid)].append(i)
 
     features_list = []
     labels_list = []
@@ -244,10 +247,14 @@ def prepare_training_data(
     for _, row in tqdm(df_labeled.iterrows(), total=len(df_labeled), desc="  Processing"):
         question_id = str(row['question_id'])
 
-        if question_id not in qid_to_int:
+        if question_id not in qid_to_indices:
             raise KeyError(f"Question ID {question_id} not found in model outputs.")
 
-        tensor_idx = qid_to_int[question_id]
+        indices = qid_to_indices[question_id]
+        # Convention: base outputs (evidence_present=False) occupy the first
+        # occurrence; RAG/evidence outputs occupy the second occurrence.
+        evidence_present = bool(row.get('evidence_present', False))
+        tensor_idx = indices[1] if evidence_present and len(indices) > 1 else indices[0]
         generated_text = row['generated_answer']
 
         tokenized = tokenizer(

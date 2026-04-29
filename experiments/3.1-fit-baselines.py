@@ -25,7 +25,8 @@ import pandas as pd
 import torch
 from pathlib import Path
 from sklearn.metrics import roc_auc_score
-from typing import Dict, List, Optional, Tuple
+from tqdm.auto import tqdm
+from typing import Any, Dict, List, Optional, Tuple
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -105,19 +106,37 @@ def fit_predictive_entropy(
     probs = torch.softmax(scores_tensor, dim=-1)
     entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)  # (n_samples, seq_len)
     
-    # Get question_ids and align with labels
-    qids = outputs['question_id'].numpy()
-    
+    # Get question_ids and align with labels.
+    # Use composite keys (question_id::evidence_present) to disambiguate base
+    # vs RAG rows that share the same question_id.
+    raw_qids = np.asarray(outputs['question_id'])
+    ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
+    qids = np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev_flags)])
+
     # Aggregate to answer-level
     unique_qids, agg_scores = aggregate_token_to_answer(
         entropies.numpy().flatten(),
         np.repeat(qids, entropies.shape[1]),
         aggregation=aggregation,
     )
-    
-    # Match with labels
+
+    # Match with labels using the same composite keys.
     label_qids, labels = extract_answer_level_labels(labels_df)
-    qid_to_label = dict(zip(label_qids, labels))
+    ev_col = next(
+        (c for c in ("evidence_present", "has_evidence", "with_evidence")
+         if c in labels_df.columns),
+        None,
+    )
+    if ev_col is not None:
+        label_keys = np.array(
+            [f"{q}::{e}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+        )
+    else:
+        label_keys = label_qids
+    qid_to_label = dict(zip(label_keys, labels))
+    mask = np.array([qid in qid_to_label for qid in unique_qids])
+    unique_qids = unique_qids[mask]
+    agg_scores = agg_scores[mask]
     matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
     
     # Fit threshold using optimal_threshold utility (maximizes accuracy)
@@ -143,15 +162,30 @@ def fit_llm_check(
     labels_df: pd.DataFrame,
     score_type: str = "attention",
     aggregation: str = "mean",
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Fit LLM-Check baseline for a specific score type and find optimal layer."""
     print(f"\n--- LLM-Check (score_type={score_type}, aggregation={aggregation}) ---")
-    
-    # Extract question_ids
-    qids = outputs['question_id'].numpy()
+
+    # Build composite qids to disambiguate base vs RAG rows.
+    raw_qids = np.asarray(outputs['question_id'])
+    ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
+    qids = np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev_flags)])
+
+    # Build label lookup with matching composite keys.
     label_qids, labels = extract_answer_level_labels(labels_df)
-    qid_to_label = dict(zip(label_qids, labels))
-    
+    ev_col = next(
+        (c for c in ("evidence_present", "has_evidence", "with_evidence")
+         if c in labels_df.columns),
+        None,
+    )
+    if ev_col is not None:
+        label_keys = np.array(
+            [f"{q}::{e}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+        )
+    else:
+        label_keys = label_qids
+    qid_to_label = dict(zip(label_keys, labels))
+
     if score_type in ["attention", "hidden"]:
         # These have layer dimension - need to find optimal layer
         if score_type == "attention":
@@ -173,29 +207,41 @@ def fit_llm_check(
         for layer in range(n_layers):
             layer_scores = scores[:, layer, :].numpy().flatten()
             layer_qids = np.repeat(qids, scores.shape[2])
-            
+
             unique_qids, agg_scores = aggregate_token_to_answer(
                 layer_scores, layer_qids, aggregation=aggregation
             )
-            matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
-            
+            mask = np.array([qid in qid_to_label for qid in unique_qids])
+            layer_matched_labels = np.array([qid_to_label[qid] for qid in unique_qids[mask]])
+            layer_agg_scores = agg_scores[mask]
+
             # Compute AUROC for this layer
-            if len(np.unique(matched_labels)) > 1:
-                auroc = roc_auc_score(matched_labels, agg_scores)
+            if len(np.unique(layer_matched_labels)) > 1:
+                auroc = roc_auc_score(layer_matched_labels, layer_agg_scores)
                 if auroc > best_auroc:
                     best_auroc = auroc
                     best_layer = layer
         
         print(f"  Best layer: {best_layer} (AUROC: {best_auroc:.4f})")
-        
-        # Fit threshold on best layer using optimal_threshold
+
+        # Re-compute scores for best layer and fit threshold.
+        best_layer_scores = scores[:, best_layer, :].numpy().flatten()
+        best_layer_qids = np.repeat(qids, scores.shape[2])
+        unique_qids, agg_scores = aggregate_token_to_answer(
+            best_layer_scores, best_layer_qids, aggregation=aggregation
+        )
+        mask = np.array([qid in qid_to_label for qid in unique_qids])
+        unique_qids = unique_qids[mask]
+        agg_scores = agg_scores[mask]
+        matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
+
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
-        
+
         if len(np.unique(matched_labels)) > 1:
             layer_auroc = roc_auc_score(matched_labels, agg_scores)
         else:
             layer_auroc = 0.5
-        
+
         print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {layer_auroc:.4f})")
         
         return {
@@ -228,11 +274,13 @@ def fit_llm_check(
         
         # Perplexity = exp(-mean(log_prob))
         perplexities = torch.exp(-gen_log_probs.mean(dim=1))
-        
-        matched_labels = np.array([qid_to_label[qid] for qid in qids])
-        
-        threshold, f1 = optimal_threshold(matched_labels, perplexities.numpy())
-        auroc = roc_auc_score(matched_labels, perplexities.numpy()) if len(np.unique(matched_labels)) > 1 else 0.5
+
+        mask = np.array([qid in qid_to_label for qid in qids])
+        matched_labels = np.array([qid_to_label[qid] for qid in qids[mask]])
+        matched_perplexities = perplexities.numpy()[mask]
+
+        threshold, f1 = optimal_threshold(matched_labels, matched_perplexities)
+        auroc = roc_auc_score(matched_labels, matched_perplexities) if len(np.unique(matched_labels)) > 1 else 0.5
         
         return {
             "threshold": float(threshold),
@@ -245,17 +293,20 @@ def fit_llm_check(
         scores = outputs['scores']
         probs = torch.softmax(scores, dim=-1)
         entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
-        
+
         unique_qids, agg_scores = aggregate_token_to_answer(
             entropies.numpy().flatten(),
             np.repeat(qids, entropies.shape[1]),
             aggregation=aggregation,
         )
+        mask = np.array([qid in qid_to_label for qid in unique_qids])
+        unique_qids = unique_qids[mask]
+        agg_scores = agg_scores[mask]
         matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
-        
+
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
         auroc = roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
-        
+
         return {
             "threshold": float(threshold),
             "aggregation": aggregation,
