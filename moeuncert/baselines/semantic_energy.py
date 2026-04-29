@@ -397,13 +397,18 @@ class SemanticEnergy(BaseBaseline):
             labels_np = np.array(labels, dtype=float)
 
         best_threshold = 0.0
-        best_accuracy = 0.0
+        best_f1 = 0.0
 
         for threshold in np.linspace(scores.min(), scores.max(), 100):
             preds = (scores >= threshold).astype(int)
-            accuracy = (preds == labels_np).mean()
-            if accuracy > best_accuracy:
-                best_accuracy = accuracy
+            tp = ((preds == 1) & (labels_np == 1)).sum()
+            fp = ((preds == 1) & (labels_np == 0)).sum()
+            fn = ((preds == 0) & (labels_np == 1)).sum()
+            precision = tp / (tp + fp + 1e-10)
+            recall = tp / (tp + fn + 1e-10)
+            f1 = 2 * precision * recall / (precision + recall + 1e-10)
+            if f1 > best_f1:
+                best_f1 = f1
                 best_threshold = threshold
 
         self.threshold = best_threshold

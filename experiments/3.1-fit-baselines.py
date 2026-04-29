@@ -262,28 +262,205 @@ def fit_llm_check(
         }
 
 
+def _semantic_ids_to_clusters(semantic_ids):
+    """Convert flat cluster ID list to list-of-index-lists format."""
+    cluster_map = {}
+    for idx, cid in enumerate(semantic_ids):
+        if cid not in cluster_map:
+            cluster_map[cid] = []
+        cluster_map[cid].append(idx)
+    return list(cluster_map.values())
+
+
 def fit_semantic_uncertainty(
-    sampled_outputs_dir: Path,
+    data_root: Path,
+    years: List[int],
+    month: Optional[int],
+    model: str,
     labels_df: pd.DataFrame,
-) -> Dict[str, float]:
-    """Fit SemanticUncertainty baseline (requires sampled responses).
+    num_samples: int = 5,
+    temperature: float = 0.7,
+) -> Dict:
+    """Fit SemanticUncertainty baseline using sampled responses.
     
-    TODO: Implement sampled data loading and SU fitting.
+    Loads sampled outputs, computes semantic entropy scores per question,
+    and fits an F1-optimal threshold.
     """
-    print("\n--- SemanticUncertainty (TODO: requires sampled responses) ---")
-    return {"threshold": None, "note": "Requires sampled response data"}
+    from moeuncert.experiments.data_loading import load_sampled_outputs
+    from moeuncert.baselines.semantic_uncertainty import SemanticUncertainty
+
+    print(f"\n--- SemanticUncertainty (num_samples={num_samples}) ---")
+
+    # Load sampled data
+    sampled = load_sampled_outputs(
+        data_root, years, month, model, num_samples=num_samples
+    )
+    responses_by_qid = sampled["responses_by_qid"]
+    log_probs_by_qid = sampled["log_probs_by_qid"]
+
+    if not responses_by_qid:
+        print("  WARNING: No sampled responses found.")
+        return {"threshold": None, "note": "No sampled response data available"}
+
+    # Extract labels
+    label_qids, labels = extract_answer_level_labels(labels_df)
+    qid_to_label = dict(zip(label_qids, labels))
+
+    # Need to decode token IDs to text for NLI-based semantic clustering.
+    # We'll load the tokenizer once.
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model)
+
+    # Compute scores and align with labels
+    su = SemanticUncertainty()
+    scores = []
+    matched_labels = []
+
+    for qid, response_tokens_list in tqdm(responses_by_qid.items(), desc="  Computing SE"):
+        if qid not in qid_to_label:
+            continue
+
+        # Decode token IDs to text strings for NLI
+        responses = [
+            tokenizer.decode(tokens, skip_special_tokens=True)
+            for tokens in response_tokens_list
+        ]
+        log_probs = log_probs_by_qid.get(qid, [])
+
+        if not responses or not log_probs:
+            continue
+
+        try:
+            score = su.predict_proba(responses, log_probs)
+            scores.append(score)
+            matched_labels.append(qid_to_label[qid])
+        except Exception as e:
+            print(f"  WARNING: Failed to compute SE for {qid}: {e}")
+            continue
+
+    if not scores:
+        print("  WARNING: Could not compute any Semantic Entropy scores.")
+        return {"threshold": None, "note": "SE computation failed for all questions"}
+
+    scores = np.array(scores)
+    matched_labels = np.array(matched_labels)
+
+    # Fit threshold using F1
+    threshold, f1 = optimal_threshold(matched_labels, scores)
+    auroc = roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
+
+    print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+    print(f"  Evaluated on {len(scores)} questions")
+
+    return {
+        "threshold": float(threshold),
+        "auroc": float(auroc),
+        "num_questions": int(len(scores)),
+        "num_samples": num_samples,
+    }
 
 
 def fit_semantic_energy(
-    sampled_outputs_dir: Path,
+    data_root: Path,
+    years: List[int],
+    month: Optional[int],
+    model: str,
     labels_df: pd.DataFrame,
-) -> Dict[str, float]:
-    """Fit SemanticEnergy baseline (requires sampled responses).
-    
-    TODO: Implement sampled data loading and SE fitting.
+    num_samples: int = 5,
+    temperature: float = 0.7,
+) -> Dict:
+    """Fit SemanticEnergy baseline using sampled responses.
+
+    Loads sampled outputs, clusters responses via NLI, computes semantic
+    energy scores per question, and fits an F1-optimal threshold.
     """
-    print("\n--- SemanticEnergy (TODO: requires sampled responses) ---")
-    return {"threshold": None, "note": "Requires sampled response data"}
+    from moeuncert.experiments.data_loading import load_sampled_outputs
+    from moeuncert.baselines.semantic_uncertainty import SemanticUncertainty
+    from moeuncert.baselines.semantic_energy import SemanticEnergy
+
+    print(f"\n--- SemanticEnergy (num_samples={num_samples}) ---")
+
+    # Load sampled data
+    sampled = load_sampled_outputs(
+        data_root, years, month, model, num_samples=num_samples
+    )
+    responses_by_qid = sampled["responses_by_qid"]
+    log_probs_by_qid = sampled["log_probs_by_qid"]
+    logits_by_qid = sampled["logits_by_qid"]
+
+    if not responses_by_qid:
+        print("  WARNING: No sampled responses found.")
+        return {"threshold": None, "note": "No sampled response data available"}
+
+    # Extract labels
+    label_qids, labels = extract_answer_level_labels(labels_df)
+    qid_to_label = dict(zip(label_qids, labels))
+
+    # Load tokenizer for decoding and NLI clustering
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model)
+
+    # Use SemanticUncertainty's clustering for building semantic groups
+    su = SemanticUncertainty()
+    se = SemanticEnergy()
+
+    scores = []
+    matched_labels = []
+
+    for qid, response_tokens_list in tqdm(responses_by_qid.items(), desc="  Computing SEnergy"):
+        if qid not in qid_to_label:
+            continue
+
+        # Decode token IDs to text for NLI
+        responses = [
+            tokenizer.decode(tokens, skip_special_tokens=True)
+            for tokens in response_tokens_list
+        ]
+        log_probs = log_probs_by_qid.get(qid, [])
+        response_logits = logits_by_qid.get(qid, [])
+
+        if not responses or not response_logits or len(responses) < 2:
+            continue
+
+        try:
+            # Cluster responses using NLI
+            semantic_ids = su.cluster_responses(responses)
+            clusters = _semantic_ids_to_clusters(semantic_ids)
+
+            # Compute probabilities per response (product of token probs)
+            response_probs = [[np.exp(lp) for lp in ll] for ll in log_probs]
+
+            score = se.predict_proba(
+                response_logits=response_logits,
+                response_probs=response_probs,
+                clusters=clusters,
+            )
+            scores.append(score)
+            matched_labels.append(qid_to_label[qid])
+        except Exception as e:
+            print(f"  WARNING: Failed to compute SEnergy for {qid}: {e}")
+            continue
+
+    if not scores:
+        print("  WARNING: Could not compute any Semantic Energy scores.")
+        return {"threshold": None, "note": "SE computation failed for all questions"}
+
+    scores = np.array(scores)
+    matched_labels = np.array(matched_labels)
+
+    # Fit threshold using F1
+    threshold, f1 = optimal_threshold(matched_labels, scores)
+    auroc = roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
+
+    print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+    print(f"  Evaluated on {len(scores)} questions")
+
+    return {
+        "threshold": float(threshold),
+        "auroc": float(auroc),
+        "num_questions": int(len(scores)),
+        "num_samples": num_samples,
+    }
 
 
 def main():
@@ -343,6 +520,18 @@ def main():
         default=["mean", "max"],
         help="Aggregation methods for token-level baselines",
     )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=5,
+        help="Number of sampled responses per question for SU/SE baselines (default: 5)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature used during generation (default: 0.7)",
+    )
     
     args = parser.parse_args()
     
@@ -393,16 +582,26 @@ def main():
                 outputs, df_labeled, score_type=score_type, aggregation=agg
             )
     
-    # SemanticUncertainty (requires sampled data)
-    # TODO: Implement when sampled data is available
+    # SemanticUncertainty (requires sampled data from 1.1)
     thresholds["semantic_uncertainty"] = fit_semantic_uncertainty(
-        args.data_root, df_labeled
+        args.data_root,
+        args.train_years,
+        args.month,
+        args.model,
+        df_labeled,
+        num_samples=args.num_samples,
+        temperature=getattr(args, 'temperature', 0.7),
     )
     
-    # SemanticEnergy (requires sampled data)
-    # TODO: Implement when sampled data is available
+    # SemanticEnergy (requires sampled data from 1.1)
     thresholds["semantic_energy"] = fit_semantic_energy(
-        args.data_root, df_labeled
+        args.data_root,
+        args.train_years,
+        args.month,
+        args.model,
+        df_labeled,
+        num_samples=args.num_samples,
+        temperature=getattr(args, 'temperature', 0.7),
     )
     
     # SelfCheckGPT: no threshold needed
