@@ -69,9 +69,15 @@ def extract_halunet_features(
             f"Ensure compute_metrics(return_baseline_features=True) was used during generation."
         )
 
-    # Build a mapping from string question ID to positional index.
+    # Build a mapping from string question ID to a list of positional indices.
+    # The same question_id can appear twice when both base and evidence outputs
+    # are present; duplicates are disambiguated via evidence_present.
+    from collections import defaultdict
     all_qids = outputs["question_id"]  # list of strings
-    qid_to_idx = {qid: i for i, qid in enumerate(all_qids)}
+    qid_to_indices: dict = defaultdict(list)
+    for i, qid in enumerate(all_qids):
+        qid_to_indices[str(qid)].append(i)
+    ev_flags = outputs.get("evidence_present", [False] * len(all_qids))
 
     log_likelihoods_list = []
     entropies_list = []
@@ -79,11 +85,15 @@ def extract_halunet_features(
     labels = []
 
     for _, row in df_labeled.iterrows():
-        qid = row["question_id"]
-        if qid not in qid_to_idx:
+        qid = str(row["question_id"])
+        if qid not in qid_to_indices:
             continue
 
-        idx = qid_to_idx[qid]
+        indices = qid_to_indices[qid]
+        # Convention: base outputs (evidence_present=False) occupy the first
+        # occurrence; RAG/evidence outputs occupy the second occurrence.
+        evidence_present = bool(row.get("evidence_present", False))
+        idx = indices[1] if evidence_present and len(indices) > 1 else indices[0]
 
         # Find generation boundaries
         input_ids = outputs["input_ids"][idx]
