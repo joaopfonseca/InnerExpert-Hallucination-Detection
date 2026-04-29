@@ -147,16 +147,15 @@ def optimal_threshold(y_true, scores, metric="f1"):
 
     if metric == "f1":
         precisions, recalls, thresholds = precision_recall_curve(y_true, scores)
-        # precision_recall_curve returns one more threshold than precisions/recalls
-        # so we need to trim
         f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
-        best_idx = np.argmax(f1_scores)
-        # Handle the case where best_idx equals len(thresholds)
-        if best_idx >= len(thresholds):
-            best_threshold = thresholds[-1] if len(thresholds) > 0 else 0.5
-        else:
-            best_threshold = thresholds[best_idx]
-        best_value = f1_scores[best_idx]
+        # precision_recall_curve returns len(thresholds) + 1 precision/recall points,
+        # so only the first len(thresholds) F1 values correspond to actual thresholds.
+        threshold_f1_scores = f1_scores[:-1]
+        if len(thresholds) == 0:
+            return 0.5, f1_scores[0]
+        best_idx = np.argmax(threshold_f1_scores)
+        best_threshold = thresholds[best_idx]
+        best_value = threshold_f1_scores[best_idx]
         return best_threshold, best_value
     elif metric == "accuracy":
         fpr, tpr, thresholds = roc_curve(y_true, scores)
