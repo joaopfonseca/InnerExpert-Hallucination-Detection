@@ -1,58 +1,50 @@
 #!/usr/bin/env bash
 # ============================================================================
-# End-to-end pipeline runner for MoE Uncertainty Estimation experiments
+# Quick pipeline: train on 2025, test OOD on January 2026.
 #
-# Train on 2022-2025, test OOD on January 2026.
+# A faster variant of run_pipeline.sh for rapid iteration.
+# Uses a single training year instead of 2022-2025.
 #
 # Usage:
-#   chmod +x run_pipeline.sh
-#   ./run_pipeline.sh
-#
-# Override variables:
-#   MODEL="mistralai/Mixtral-8x7B-Instruct-v0.1" ./run_pipeline.sh
+#   chmod +x run_pipeline_quick.sh
+#   ./run_pipeline_quick.sh
 # ============================================================================
 
 set -euo pipefail
 
-# --- PHASE 1: GENERATION (run once per dataset) ---
-# These generate answers for ALL data (train + test years).
-# Training scripts later filter to their --train-years subset.
-# 4.0 evaluation filters to its --test-years/--test-month subset.
-
-GENERATION_YEARS=(2022 2023 2024 2025 2026)
+# --- GENERATION (both years needed — train + test) ---
+GENERATION_YEARS=(2025 2026)
 GENERATION_MONTH=""             # Empty = all months for each year
 
-# --- TRAINING CONFIGURATION ---
-TRAIN_YEARS=(2022 2023 2024 2025)
-TRAIN_MONTH=""                  # Empty = all months for each training year
+# --- TRAINING (single year) ---
+TRAIN_YEARS=(2025)
+TRAIN_MONTH=""                  # Empty = all months
 
-# --- TEST CONFIGURATION ---
+# --- TEST (single month) ---
 TEST_YEARS=(2026)
 TEST_MONTH=1                    # January 2026
 
 # --- MODEL CONFIGURATION ---
 MODEL="allenai/OLMoE-1B-7B-0924-Instruct"
-QUANTIZE="4-bit"                # "16-bit", "8-bit", or "4-bit"
-LABEL_MODEL="zai-org/GLM-5.1"   # LLM-as-a-Judge model for labeling
+QUANTIZE="4-bit"
+LABEL_MODEL="zai-org/GLM-5.1"
 
-# --- GENERATION CONFIGURATION ---
+# --- GENERATION ---
 MAX_NEW_TOKENS=65
 
-# --- SAMPLING CONFIGURATION ---
+# --- SAMPLING ---
 NUM_SAMPLES=5
 SAMPLING_TEMPERATURE=0.7
 SAMPLING_TOP_P=0.9
 SAMPLING_BATCH_SIZE=2
 
-# --- LABELING CONFIGURATION ---
+# --- LABELING ---
 ANSWER_THRESHOLD=0.5
-USE_LLM_TOKEN_LABELS="--use-llm-token-labels"  # Set to "" to disable
-MAX_LLM_ANSWER_SAMPLES=""       # Limit LLM queries (empty = all)
-MAX_LLM_TOKEN_SAMPLES=""        # Limit LLM token queries (empty = all)
+USE_LLM_TOKEN_LABELS="--use-llm-token-labels"
+MAX_LLM_ANSWER_SAMPLES=""
+MAX_LLM_TOKEN_SAMPLES=""
 
-# --- BASELINE FEATURES ---
-# Must be true for HaluNet (needs log_likelihoods + entropies)
-# and LLM-Check perplexity (pre-computed by compute_metrics).
+# --- BASELINE FEATURES (required for HaluNet + perplexity) ---
 RETURN_BASELINE_FEATURES="--return-baseline-features"
 
 # --- PATHS ---
@@ -60,31 +52,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PYTHON="${SCRIPT_DIR}/../.venv/bin/python"
 
 # ============================================================================
-# Helper functions
+# Helpers
 # ============================================================================
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')]  $*"
-}
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')]  $*"; }
 
 run_script() {
-    local script="$1"
-    shift
+    local script="$1"; shift
     log "Running: ${script} $*"
     "${VENV_PYTHON}" "${SCRIPT_DIR}/${script}" "$@"
 }
 
 # ============================================================================
-# PHASE 1: GENERATE DATA
+# PHASE 1: GENERATE
 # ============================================================================
 
-log ""
-log "============================================================"
-log "PHASE 1: GENERATE ANSWERS"
-log "============================================================"
-log ""
+log "=== PHASE 1: Generate answers ==="
 
-log "--- 1.0 Generate answers (single-pass, greedy) ---"
 run_script "1.0-generate-answers.py" \
     --model "${MODEL}" \
     --quantize "${QUANTIZE}" \
@@ -93,7 +77,6 @@ run_script "1.0-generate-answers.py" \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
     ${RETURN_BASELINE_FEATURES}
 
-log "--- 1.1 Generate sampled responses (for SU, SE, SelfCheckGPT) ---"
 run_script "1.1-generate-baseline-samples.py" \
     --model "${MODEL}" \
     --quantize "${QUANTIZE}" \
@@ -106,16 +89,10 @@ run_script "1.1-generate-baseline-samples.py" \
     --batch-size "${SAMPLING_BATCH_SIZE}"
 
 # ============================================================================
-# PHASE 2: GENERATE LABELS
+# PHASE 2: LABEL
 # ============================================================================
 
-log ""
-log "============================================================"
-log "PHASE 2: GENERATE LABELS"
-log "============================================================"
-log ""
-
-LABEL_YEARS="${GENERATION_YEARS[@]}"   # Label all generated data
+log "=== PHASE 2: Generate labels ==="
 
 LLM_ARGS=()
 [ -n "${USE_LLM_TOKEN_LABELS}" ] && LLM_ARGS+=("${USE_LLM_TOKEN_LABELS}")
@@ -124,30 +101,24 @@ LLM_ARGS=()
 
 run_script "2.0-make-labels.py" \
     --model "${MODEL}" \
-    --years ${LABEL_YEARS} \
+    --years ${GENERATION_YEARS[@]} \
     $( [ -n "${GENERATION_MONTH}" ] && echo "--month ${GENERATION_MONTH}" ) \
     --answer-threshold "${ANSWER_THRESHOLD}" \
     --deepinfra-model "${LABEL_MODEL}" \
     "${LLM_ARGS[@]}"
 
 # ============================================================================
-# PHASE 3: TRAINING (all on 2022-2025)
+# PHASE 3: TRAIN (2025 only)
 # ============================================================================
 
-log ""
-log "============================================================"
-log "PHASE 3: TRAINING (train years: ${TRAIN_YEARS[*]})"
-log "============================================================"
-log ""
+log "=== PHASE 3: Training (train years: ${TRAIN_YEARS[*]}) ==="
 
-log "--- 3.0 Train MoE detection model ---"
 run_script "3.0-detection-model-training.py" \
     --train-years "${TRAIN_YEARS[@]}" \
     $( [ -n "${TRAIN_MONTH}" ] && echo "--month ${TRAIN_MONTH}" ) \
     --model "${MODEL}" \
     --label-model "${LABEL_MODEL}"
 
-log "--- 3.1 Fit baseline thresholds ---"
 run_script "3.1-fit-baselines.py" \
     --train-years "${TRAIN_YEARS[@]}" \
     $( [ -n "${TRAIN_MONTH}" ] && echo "--month ${TRAIN_MONTH}" ) \
@@ -156,7 +127,6 @@ run_script "3.1-fit-baselines.py" \
     --num-samples "${NUM_SAMPLES}" \
     --temperature "${SAMPLING_TEMPERATURE}"
 
-log "--- 3.2 Train HaluNet ---"
 run_script "3.2-train-halunet.py" \
     --train-years "${TRAIN_YEARS[@]}" \
     $( [ -n "${TRAIN_MONTH}" ] && echo "--month ${TRAIN_MONTH}" ) \
@@ -164,14 +134,10 @@ run_script "3.2-train-halunet.py" \
     --label-model "${LABEL_MODEL}"
 
 # ============================================================================
-# PHASE 4: OOD EVALUATION (on January 2026)
+# PHASE 4: EVALUATE (January 2026)
 # ============================================================================
 
-log ""
-log "============================================================"
-log "PHASE 4: OOD EVALUATION (test: ${TEST_YEARS[*]}-$(printf '%02d' ${TEST_MONTH}))"
-log "============================================================"
-log ""
+log "=== PHASE 4: OOD evaluation (test: ${TEST_YEARS[*]}-$(printf '%02d' ${TEST_MONTH})) ==="
 
 run_script "4.0-model-evaluation.py" \
     --test-years "${TEST_YEARS[@]}" \
@@ -180,20 +146,6 @@ run_script "4.0-model-evaluation.py" \
     --label-model "${LABEL_MODEL}" \
     --num-samples "${NUM_SAMPLES}"
 
-# ============================================================================
-# DONE
-# ============================================================================
-
 log ""
-log "============================================================"
-log "PIPELINE COMPLETE"
-log "============================================================"
-log ""
-log "Results:"
-log "  Generated answers:    data/realtimeqa-YYYY(-MM)/<model_slug>/{base,evidence}_generation/"
-log "  Sampled responses:    data/realtimeqa-YYYY(-MM)/<model_slug>/sampled_generation/"
-log "  Labels:               data/realtimeqa-YYYY(-MM)/<model_slug>/results_labeled_*.parquet"
-log "  Trained models:       models/<model_slug>/detector.pkl, halunet.pt, thresholds.json"
-log "  Predictions:          data/realtimeqa-YYYY(-MM)/<model_slug>/predictions/"
-log ""
-log "Next step: python experiments/5.0-results-analysis.py"
+log "=== PIPELINE COMPLETE ==="
+log "Predictions in: data/realtimeqa-2026-01/<model_slug>/predictions/"
