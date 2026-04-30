@@ -231,12 +231,16 @@ def evaluate_llm_check(
     hidden_mean = hidden_s.mean(dim=-1).numpy()  # (B, seq_len)
 
     # --- Perplexity ---
-    # Requires either raw scores or sequences; use sequences + input_ids
+    # Use pre-computed perplexity if available (from compute_metrics with
+    # return_baseline_features=True), otherwise recompute from raw scores
+    # or fall back to NaN.
     sequences = outputs["sequences"]
     input_ids = outputs["input_ids"]
 
-    perplexities = np.zeros(B)
-    if "scores" in outputs:
+    perplexities = np.full(B, np.nan)
+    if "perplexity" in outputs:
+        perplexities = outputs["perplexity"].numpy()  # (B,)
+    elif "scores" in outputs:
         scores_t = outputs["scores"]  # (B, seq_len, vocab)
         for b in range(B):
             gen_start, gen_end = _find_gen_boundaries(input_ids[b], sequences[b])
@@ -247,8 +251,7 @@ def evaluate_llm_check(
                 token_logprobs = torch.gather(log_probs, dim=-1, index=gen_tokens).squeeze(-1)
                 perplexities[b] = torch.exp(-token_logprobs.mean()).item()
     else:
-        print("  WARNING: raw scores unavailable, perplexity set to NaN (requires raw scores).")
-        perplexities[:] = np.nan
+        print("  WARNING: perplexity not available (requires return_baseline_features=True or raw scores).")
 
     # --- Entropy ---
     # Use scores_entropy (top-k entropy) or recompute from raw scores

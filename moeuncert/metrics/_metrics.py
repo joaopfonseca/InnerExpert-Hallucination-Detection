@@ -335,6 +335,9 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
             entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
             metrics["entropies"] = entropies
 
+            # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t})))
+            metrics["perplexity"] = torch.exp(-log_likelihoods.mean(dim=1))  # (B,)
+
     if "expert_weights" in standardized_outputs:
         # Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)
         # Shape of router entropy scores: (batch_size, sequence_length, n_layers)
