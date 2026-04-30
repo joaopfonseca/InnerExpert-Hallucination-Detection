@@ -99,13 +99,9 @@ def fit_predictive_entropy(
     """Fit PredictiveEntropy baseline and return threshold."""
     print(f"\n--- PredictiveEntropy (aggregation={aggregation}) ---")
     
-    # Extract scores from outputs
-    scores_tensor = outputs['scores']  # (n_samples, seq_len, vocab_size)
-    
-    # Compute per-token entropy
-    probs = torch.softmax(scores_tensor, dim=-1)
-    entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)  # (n_samples, seq_len)
-    
+    # Extract pre-computed top-k entropy from outputs
+    entropies = outputs['scores_entropy']  # (n_samples, seq_len)
+
     # Get question_ids and align with labels.
     # Use composite keys (question_id::evidence_present) to disambiguate base
     # vs RAG rows that share the same question_id.
@@ -254,26 +250,8 @@ def fit_llm_check(
     
     elif score_type == "perplexity":
         # Answer-level directly — aggregation parameter is a no-op here
-        # (perplexity is inherently a single scalar per answer)
-        scores = outputs['scores']  # (n_samples, seq_len, vocab_size)
-        sequences = outputs['sequences']  # (n_samples, total_seq_len)
-        
-        # Get generated tokens
-        input_len = outputs['input_ids'].shape[1]
-        gen_sequences = sequences[:, input_len:]
-        
-        # Compute per-token log probs
-        log_probs = torch.log_softmax(scores, dim=-1)
-        
-        # Gather log probs of generated tokens
-        gen_log_probs = torch.gather(
-            log_probs, 
-            dim=-1, 
-            index=gen_sequences.unsqueeze(-1)
-        ).squeeze(-1)
-        
-        # Perplexity = exp(-mean(log_prob))
-        perplexities = torch.exp(-gen_log_probs.mean(dim=1))
+        # (perplexity is pre-computed by compute_metrics when return_baseline_features=True)
+        perplexities = outputs['perplexity']  # (n_samples,)
 
         mask = np.array([qid in qid_to_label for qid in qids])
         matched_labels = np.array([qid_to_label[qid] for qid in qids[mask]])
@@ -289,10 +267,8 @@ def fit_llm_check(
         }
     
     elif score_type == "entropy":
-        # Per-token entropy, aggregate to answer
-        scores = outputs['scores']
-        probs = torch.softmax(scores, dim=-1)
-        entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+        # Per-token entropy (pre-computed top-k entropy), aggregate to answer
+        entropies = outputs['scores_entropy']  # (n_samples, seq_len)
 
         unique_qids, agg_scores = aggregate_token_to_answer(
             entropies.numpy().flatten(),
