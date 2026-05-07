@@ -100,7 +100,8 @@ def fit_predictive_entropy(
     """Fit PredictiveEntropy baseline and return threshold."""
     print(f"\n--- PredictiveEntropy (aggregation={aggregation}) ---")
     
-    # Extract pre-computed top-k entropy from outputs
+    # Extract pre-computed entropy from outputs. When compute_metrics was run
+    # with k=None, `scores_entropy` is full-vocabulary entropy (not top-k).
     entropies = outputs['scores_entropy']  # (n_samples, seq_len)
 
     # Get question_ids and align with labels.
