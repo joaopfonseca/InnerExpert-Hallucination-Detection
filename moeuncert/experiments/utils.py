@@ -51,15 +51,15 @@ def find_generation_boundaries(
     content_len = input_content_end - input_content_start
     gen_start = seq_content_start + content_len
 
-    seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
-    if len(seq_zeros) > 0:
-        gen_end = gen_start + seq_zeros[0].item()
+    seq_pad_tokens = torch.where(sequences[gen_start:] == pad_token)[0]
+    if len(seq_pad_tokens) > 0:
+        gen_end = gen_start + seq_pad_tokens[0].item()
     else:
         logger.warning(
-            "find_generation_boundaries: no token ID 0 found after gen_start=%d; "
+            "find_generation_boundaries: no pad token ID %d found after gen_start=%d; "
             "falling back to len(sequences)=%d. Generation boundary may be too long. "
-            "This could indicate pad_token_id != 0 or unexpected tokenizer behavior.",
-            gen_start, len(sequences),
+            "This could indicate unexpected tokenizer behavior.",
+            pad_token, gen_start, len(sequences),
         )
         gen_end = len(sequences)
 
