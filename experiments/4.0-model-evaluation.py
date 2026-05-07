@@ -493,7 +493,6 @@ def evaluate_detector(
     detector_path: Path,
 ) -> pd.DataFrame:
     """Evaluate our trained MoE detector on test data."""
-    from moeuncert.experiments.utils import read_and_collate_outputs
     from collections import defaultdict
 
     # Load detector
