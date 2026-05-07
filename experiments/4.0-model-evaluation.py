@@ -513,6 +513,28 @@ def evaluate_detector(
         "hidden_scores", "attention_scores", "router_entropy",
         "expert_hidden_scores", "expert_similarities", "expert_usage",
     ]
+    feature_specs = []
+    for feature_name in feature_names:
+        matched_key = next(
+            (key for key in feature_keys if feature_name.startswith(f"{key}_")),
+            None,
+        )
+        if matched_key is None:
+            raise ValueError(
+                f"Unsupported detector feature '{feature_name}' in {detector_path}."
+            )
+
+        suffix = feature_name[len(matched_key) + 1:]
+        if suffix == "":
+            raise ValueError(
+                f"Invalid detector feature name '{feature_name}': missing column index."
+            )
+        if not suffix.isdigit():
+            raise ValueError(
+                f"Invalid detector feature name '{feature_name}': expected '<group>_<index>'."
+            )
+
+        feature_specs.append((matched_key, int(suffix), feature_name))
 
     all_features = []
     all_comp_qids = []
@@ -589,27 +611,11 @@ def evaluate_detector(
             token_feat_arrays[key] = arr
 
         X_tokens = np.zeros((gen_len, len(feature_names)), dtype=np.float32)
-        for col_idx, feature_name in enumerate(feature_names):
-            matched_key = next(
-                (key for key in feature_keys if feature_name.startswith(f"{key}_")),
-                None,
-            )
-            if matched_key is None:
-                raise ValueError(
-                    f"Unsupported detector feature '{feature_name}' in {detector_path}."
-                )
-
+        for col_idx, (matched_key, feat_idx, feature_name) in enumerate(feature_specs):
             if matched_key not in token_feat_arrays:
                 raise ValueError(
                     f"Missing required feature group '{matched_key}' for detector feature '{feature_name}'."
                 )
-
-            suffix = feature_name[len(matched_key) + 1:]
-            if not suffix.isdigit():
-                raise ValueError(
-                    f"Invalid detector feature name '{feature_name}': expected '<group>_<index>'."
-                )
-            feat_idx = int(suffix)
 
             group_arr = token_feat_arrays[matched_key]
             if feat_idx >= group_arr.shape[1]:
