@@ -69,7 +69,18 @@ def _build_composite_qids(outputs: Dict) -> np.ndarray:
     """Build composite question_id::evidence_present keys to disambiguate
     base vs RAG rows that share the same question_id."""
     raw_qids = np.asarray(outputs["question_id"])
-    ev = np.asarray(outputs.get("evidence_present", [False] * len(raw_qids)))
+
+    if "evidence_present" not in outputs:
+        ev = np.full(len(raw_qids), False, dtype=bool)
+    else:
+        ev = np.asarray(outputs["evidence_present"])
+        if len(ev) != len(raw_qids):
+            raise ValueError(
+                "Length mismatch in _build_composite_qids(): "
+                f"question_id has {len(raw_qids)} entries but "
+                f"evidence_present has {len(ev)}"
+            )
+
     return np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev)])
 
 
