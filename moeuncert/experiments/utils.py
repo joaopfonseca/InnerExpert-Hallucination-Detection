@@ -1,8 +1,69 @@
+import logging
 import numpy as np
 import torch
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Union, Tuple
 from sklearn.metrics import roc_curve, roc_auc_score, average_precision_score, f1_score, accuracy_score
+
+logger = logging.getLogger(__name__)
+
+
+def find_generation_boundaries(
+    input_ids: torch.Tensor,
+    sequences: torch.Tensor,
+) -> Tuple[int, int]:
+    """Find where the generated answer starts and ends in the full sequence.
+
+    Handles left-padded sequences by detecting the prompt content region
+    from input_ids, then computing the generated region in sequences.
+
+    Parameters
+    ----------
+    input_ids : torch.Tensor
+        Token IDs for the prompt (1D, with left padding).
+    sequences : torch.Tensor
+        Full generated sequence (1D, prompt + generation, with padding).
+
+    Returns
+    -------
+    Tuple[int, int]
+        (gen_start, gen_end) positions in sequences.
+    """
+    pad_token = input_ids[0].item()
+    non_pad_mask = input_ids != pad_token
+    input_content_start = (
+        torch.where(non_pad_mask)[0][0].item()
+        if torch.any(non_pad_mask) else len(input_ids)
+    )
+
+    non_zero_mask = input_ids != 0
+    input_content_end = (
+        torch.where(non_zero_mask)[0][-1].item() + 1
+        if torch.any(non_zero_mask) else 0
+    )
+
+    seq_non_pad_mask = sequences != pad_token
+    seq_content_start = (
+        torch.where(seq_non_pad_mask)[0][0].item()
+        if torch.any(seq_non_pad_mask) else len(sequences)
+    )
+
+    content_len = input_content_end - input_content_start
+    gen_start = seq_content_start + content_len
+
+    seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
+    if len(seq_zeros) > 0:
+        gen_end = gen_start + seq_zeros[0].item()
+    else:
+        logger.warning(
+            "find_generation_boundaries: no token ID 0 found after gen_start=%d; "
+            "falling back to len(sequences)=%d. Generation boundary may be too long. "
+            "This could indicate pad_token_id != 0 or unexpected tokenizer behavior.",
+            gen_start, len(sequences),
+        )
+        gen_end = len(sequences)
+
+    return gen_start, gen_end
 
 
 def read_and_collate_outputs(
@@ -215,6 +276,56 @@ def stratified_group_split(
     val_mask = np.isin(groups, val_groups)
 
     return train_mask, val_mask
+
+
+def create_token_labels(
+    generated_text: str,
+    hallucinated_spans,
+    offset_mapping: List[Tuple[int, int]],
+) -> torch.Tensor:
+    """Create binary token labels based on hallucinated text spans.
+
+    Uses the tokenizer's offset mapping to accurately map character-level
+    hallucinated spans to token-level binary labels. A token is labeled 1
+    (hallucinated) if any part of its character span overlaps with any
+    hallucinated span.
+
+    Parameters
+    ----------
+    generated_text : str
+        The generated answer text.
+    hallucinated_spans : array-like
+        List of hallucinated text substrings, or None/empty.
+    offset_mapping : List[Tuple[int, int]]
+        Tokenizer offset mapping for the generated_text.
+
+    Returns
+    -------
+    torch.Tensor
+        Binary token labels (1 = hallucinated, 0 = grounded).
+    """
+    n_tokens = len(offset_mapping)
+    token_labels = torch.zeros(n_tokens, dtype=torch.long)
+
+    if hallucinated_spans is None:
+        return token_labels
+    if isinstance(hallucinated_spans, np.ndarray) and len(hallucinated_spans) == 0:
+        return token_labels
+    if isinstance(hallucinated_spans, list) and len(hallucinated_spans) == 0:
+        return token_labels
+
+    for span_text in hallucinated_spans:
+        span_text = str(span_text)
+        span_start = generated_text.find(span_text)
+        if span_start == -1:
+            continue
+        span_end = span_start + len(span_text)
+
+        for token_idx, (char_start, char_end) in enumerate(offset_mapping):
+            if char_end > span_start and char_start < span_end:
+                token_labels[token_idx] = 1
+
+    return token_labels
 
 
 def compute_metrics_at_threshold(

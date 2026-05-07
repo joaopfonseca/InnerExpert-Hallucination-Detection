@@ -44,15 +44,16 @@ def extract_answer_level_labels(df_labeled: pd.DataFrame) -> Tuple[np.ndarray, n
     """Extract answer-level labels from labeled dataframe.
     
     Returns question_ids and binary labels (0=factual, 1=hallucinated).
+    Uses LLM label when available, falling back to weak label per row.
     """
-    # Use LLM label if available, otherwise weak label
-    if 'label_llm_answer' in df_labeled.columns:
-        labels = df_labeled['label_llm_answer'].astype(int).values
-    elif 'label_weak_hallucination' in df_labeled.columns:
-        labels = df_labeled['label_weak_hallucination'].astype(int).values
-    else:
+    if 'label_llm_answer' not in df_labeled.columns and 'label_weak_hallucination' not in df_labeled.columns:
         raise ValueError("No hallucination labels found in dataframe")
-    
+
+    llm_labels = df_labeled.get('label_llm_answer', pd.Series(dtype=float))
+    weak_labels = df_labeled.get('label_weak_hallucination', pd.Series(dtype=float))
+
+    # Per-row fallback: use LLM label if valid, otherwise weak label
+    labels = llm_labels.where(llm_labels.notna(), weak_labels).astype(int).values
     qids = df_labeled['question_id'].values
     return qids, labels
 

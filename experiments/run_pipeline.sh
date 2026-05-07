@@ -46,11 +46,8 @@ SAMPLING_BATCH_SIZE=2
 
 # --- LABELING CONFIGURATION ---
 ANSWER_THRESHOLD=0.5
-USE_LLM_TOKEN_LABELS="--use-llm-token-labels"  # Set to "" to disable
-MAX_LLM_ANSWER_SAMPLES=""       # Limit LLM queries (empty = all)
-MAX_LLM_TOKEN_SAMPLES=""        # Limit LLM token queries (empty = all)
 
-# --- BASELINE FEATURES ---
+# --- PATHS ---
 # Must be true for HaluNet (needs log_likelihoods + entropies)
 # and LLM-Check perplexity (pre-computed by compute_metrics).
 RETURN_BASELINE_FEATURES="--return-baseline-features"
@@ -117,18 +114,12 @@ log ""
 
 LABEL_YEARS="${GENERATION_YEARS[@]}"   # Label all generated data
 
-LLM_ARGS=()
-[ -n "${USE_LLM_TOKEN_LABELS}" ] && LLM_ARGS+=("${USE_LLM_TOKEN_LABELS}")
-[ -n "${MAX_LLM_ANSWER_SAMPLES}" ] && LLM_ARGS+=(--max-llm-answer-samples "${MAX_LLM_ANSWER_SAMPLES}")
-[ -n "${MAX_LLM_TOKEN_SAMPLES}" ] && LLM_ARGS+=(--max-llm-token-samples "${MAX_LLM_TOKEN_SAMPLES}")
-
 run_script "2.0-make-labels.py" \
     --model "${MODEL}" \
     --years ${LABEL_YEARS} \
     $( [ -n "${GENERATION_MONTH}" ] && echo "--month ${GENERATION_MONTH}" ) \
     --answer-threshold "${ANSWER_THRESHOLD}" \
-    --deepinfra-model "${LABEL_MODEL}" \
-    "${LLM_ARGS[@]}"
+    --deepinfra-model "${LABEL_MODEL}"
 
 # ============================================================================
 # PHASE 3: TRAINING (all on 2022-2025)

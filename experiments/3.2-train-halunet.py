@@ -39,6 +39,7 @@ from moeuncert.experiments import (
     resolve_dataset_slug,
     load_multi_year_data,
     stratified_group_split,
+    find_generation_boundaries,
 )
 
 
@@ -61,7 +62,7 @@ def extract_halunet_features(
         Each list element corresponds to one answer (variable-length sequences).
     """
     # Check required keys exist
-    required_keys = ["log_likelihoods", "entropies", "hidden_states", "question_id", "sequences", "input_ids"]
+    required_keys = ["log_likelihoods", "entropies", "last_hidden_states", "question_id", "sequences", "input_ids"]
     missing = [k for k in required_keys if k not in outputs]
     if missing:
         raise KeyError(
@@ -98,35 +99,7 @@ def extract_halunet_features(
         # Find generation boundaries
         input_ids = outputs["input_ids"][idx]
         sequences = outputs["sequences"][idx]
-
-        # Find prompt length (after left padding)
-        pad_token = input_ids[0].item()
-        non_pad_mask = input_ids != pad_token
-        input_content_start = (
-            torch.where(non_pad_mask)[0][0].item()
-            if torch.any(non_pad_mask) else len(input_ids)
-        )
-        non_zero_mask = input_ids != 0
-        input_content_end = (
-            torch.where(non_zero_mask)[0][-1].item() + 1
-            if torch.any(non_zero_mask) else 0
-        )
-
-        seq_non_pad_mask = sequences != pad_token
-        seq_content_start = (
-            torch.where(seq_non_pad_mask)[0][0].item()
-            if torch.any(seq_non_pad_mask) else len(sequences)
-        )
-
-        content_len = input_content_end - input_content_start
-        gen_start = seq_content_start + content_len
-
-        seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
-        gen_end = (
-            gen_start + seq_zeros[0].item()
-            if len(seq_zeros) > 0 else len(sequences)
-        )
-
+        gen_start, gen_end = find_generation_boundaries(input_ids, sequences)
         gen_len = gen_end - gen_start
 
         if gen_len <= 0:
@@ -136,17 +109,18 @@ def extract_halunet_features(
         ll = outputs["log_likelihoods"][idx, :gen_len].numpy()
         ent = outputs["entropies"][idx, :gen_len].numpy()
 
-        # Hidden states: shape (seq_len, n_layers, hidden_size)
-        # Use last layer embeddings
-        hidden = outputs["hidden_states"][idx, gen_start:gen_end, -1, :].numpy()
+        # Last-layer hidden states for generated tokens only (pre-sliced)
+        hidden = outputs["last_hidden_states"][idx, :gen_len, :].numpy()
 
         log_likelihoods_list.append(ll)
         entropies_list.append(ent)
         embeddings_list.append(hidden)
 
-        # Answer-level label
-        if "label_llm_answer" in row:
-            labels.append(int(row["label_llm_answer"]))
+        # Answer-level label: prefer LLM label, fall back to weak label per row
+        import math
+        llm_val = row.get("label_llm_answer")
+        if llm_val is not None and not (isinstance(llm_val, float) and math.isnan(llm_val)):
+            labels.append(int(llm_val))
         elif "label_weak_hallucination" in row:
             labels.append(int(row["label_weak_hallucination"]))
         else:

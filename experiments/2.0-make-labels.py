@@ -29,13 +29,12 @@ weak heuristic confidence.
 Token-level labels
 ------------------
 Token-level labels are stored as masks aligned with answer tokens
-(`1 = hallucinated`, `0 = grounded`). Two modes are supported:
+(`1 = hallucinated`, `0 = grounded`). Hallucinated spans are extracted
+from the LLM answer-level batch response and mapped to tokens using
+the tokenizer's offset mapping at training/evaluation time.
 
-- Optional LLM-extracted hallucinated spans (DeepInfra)
-- Deterministic lexical-support heuristic fallback using evidence/reference text
-
-If LLM spans are requested but unusable for a sample, the script automatically
-falls back to the heuristic method.
+The script also supports a lexical-support heuristic fallback using
+evidence/reference text when LLM spans are unavailable.
 
 Outputs
 -------
@@ -406,17 +405,7 @@ if __name__ == "__main__":
         default=None,
         help="Maximum rows to query for answer-level LLM labels (optional).",
     )
-    parser.add_argument(
-        "--use-llm-token-labels",
-        action="store_true",
-        help="If set, request token-level hallucinated spans from the LLM for hallucinated answers.",
-    )
-    parser.add_argument(
-        "--max-llm-token-samples",
-        type=int,
-        default=None,
-        help="Maximum rows to query for token-level LLM spans (optional, after answer pass).",
-    )
+
     parser.add_argument(
         "--llm-poll-interval",
         type=int,

@@ -53,7 +53,12 @@ from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
     load_multi_year_data,
+    create_token_labels,
+    find_generation_boundaries,
 )
+
+# Short alias for convenience within this script
+_find_gen_boundaries = find_generation_boundaries
 
 
 # ---------------------------------------------------------------------------
@@ -69,13 +74,16 @@ def _build_composite_qids(outputs: Dict) -> np.ndarray:
 
 
 def _build_label_lookup(df_labeled: pd.DataFrame) -> Dict[str, int]:
-    """Build {composite_qid: label} lookup from labeled dataframe."""
-    if "label_llm_answer" in df_labeled.columns:
-        labels = df_labeled["label_llm_answer"].astype(int).values
-    elif "label_weak_hallucination" in df_labeled.columns:
-        labels = df_labeled["label_weak_hallucination"].astype(int).values
-    else:
+    """Build {composite_qid: label} lookup from labeled dataframe.
+
+    Uses LLM label when available, falling back to weak label per row.
+    """
+    if "label_llm_answer" not in df_labeled.columns and "label_weak_hallucination" not in df_labeled.columns:
         raise ValueError("No hallucination labels found in dataframe")
+
+    llm_labels = df_labeled.get("label_llm_answer", pd.Series(dtype=float))
+    weak_labels = df_labeled.get("label_weak_hallucination", pd.Series(dtype=float))
+    labels = llm_labels.where(llm_labels.notna(), weak_labels).astype(int).values
 
     qids = df_labeled["question_id"].astype(str).values
     ev_col = next(
@@ -88,27 +96,6 @@ def _build_label_lookup(df_labeled: pd.DataFrame) -> Dict[str, int]:
     else:
         keys = qids
     return dict(zip(keys, labels))
-
-
-def _find_gen_boundaries(
-    input_ids: torch.Tensor, sequences: torch.Tensor
-) -> Tuple[int, int]:
-    """Find where the generated answer starts and ends in the full sequence."""
-    pad_token = input_ids[0].item()
-    non_pad = input_ids != pad_token
-    input_start = torch.where(non_pad)[0][0].item() if non_pad.any() else len(input_ids)
-    non_zero = input_ids != 0
-    input_end = torch.where(non_zero)[0][-1].item() + 1 if non_zero.any() else 0
-
-    seq_non_pad = sequences != pad_token
-    seq_start = torch.where(seq_non_pad)[0][0].item() if seq_non_pad.any() else len(sequences)
-
-    content_len = input_end - input_start
-    gen_start = seq_start + content_len
-
-    seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
-    gen_end = gen_start + seq_zeros[0].item() if len(seq_zeros) > 0 else len(sequences)
-    return gen_start, gen_end
 
 
 def _aggregate_token_to_answer(
@@ -160,7 +147,7 @@ def evaluate_predictive_entropy(
         probs = torch.softmax(scores, dim=-1)
         entropies = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
     elif "scores_entropy" in outputs:
-        # Fallback: use pre-computed top-k entropy (less informative)
+        # Fallback: use pre-computed full-vocabulary entropy
         print("  WARNING: raw scores not in batch files, using scores_entropy fallback.")
         entropies = outputs["scores_entropy"]  # (B, seq_len)
     else:
@@ -440,12 +427,11 @@ def evaluate_halunet(
     from moeuncert.baselines.halunet import HaluNet
     from collections import defaultdict
 
-    # HaluNet requires hidden_states for embeddings — may not be in batch files
-    if "hidden_states" not in outputs:
+    # HaluNet requires last_hidden_states for embeddings — may not be in batch files
+    if "last_hidden_states" not in outputs:
         raise KeyError(
-            "'hidden_states' not in outputs. "
-            "Ensure 1.0-generate-answers.py saves raw hidden_states "
-            "alongside baseline features."
+            "'last_hidden_states' not in outputs. "
+            "Ensure 1.0-generate-answers.py was run with --return-baseline-features."
         )
 
     # Load HaluNet checkpoint
@@ -475,10 +461,10 @@ def evaluate_halunet(
         if gen_len <= 0:
             continue
 
-        # Extract features for generated tokens
+        # Extract features for generated tokens (pre-sliced to last layer + generated positions)
         ll = outputs["log_likelihoods"][idx, :gen_len].numpy()
         ent = outputs["entropies"][idx, :gen_len].numpy()
-        hidden_states = outputs["hidden_states"][idx, gen_start:gen_end, -1, :].numpy()
+        hidden_states = outputs["last_hidden_states"][idx, :gen_len, :].numpy()
 
         score = halunet.predict_proba(ll, ent, hidden_states)
 
@@ -612,8 +598,13 @@ def build_ground_truth(
     outputs: Dict,
     df_labeled: pd.DataFrame,
     label_lookup: Dict[str, int],
+    tokenizer,
 ) -> pd.DataFrame:
-    """Build ground_truth.parquet with token-level and answer-level labels."""
+    """Build ground_truth.parquet with token-level and answer-level labels.
+
+    Uses the tokenizer's offset mapping to accurately convert character-level
+    hallucinated spans to token-level binary labels.
+    """
     from collections import defaultdict
 
     all_qids = outputs["question_id"]
@@ -640,24 +631,25 @@ def build_ground_truth(
         if gen_len <= 0:
             continue
 
-        # Token-level labels from hallucinated spans
-        token_labels = torch.zeros(gen_len, dtype=torch.int)
-        hallucinated_spans = row.get("llm_hallucinated_spans", None)
+        # Token-level labels from hallucinated spans via proper offset mapping
         generated_text = row.get("generated_answer", "")
-        if isinstance(hallucinated_spans, np.ndarray) and len(hallucinated_spans) > 0:
-            # Simple character-offset matching
-            for span in hallucinated_spans:
-                start = generated_text.find(str(span))
-                if start >= 0:
-                    end = start + len(str(span))
-                    # Rough: each token ~4 chars on average
-                    tok_start = start // 4
-                    tok_end = (end + 3) // 4
-                    tok_start = min(tok_start, gen_len - 1)
-                    tok_end = min(tok_end, gen_len)
-                    token_labels[tok_start:tok_end] = 1
+        tokenized = tokenizer(
+            generated_text,
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+        )
+        n_tokens = len(tokenized["input_ids"])
+        actual_n_tokens = min(n_tokens, gen_len)
 
-        for pos in range(gen_len):
+        hallucinated_spans = row.get("llm_hallucinated_spans", None)
+        token_labels = create_token_labels(
+            generated_text,
+            hallucinated_spans,
+            tokenized["offset_mapping"],
+        )
+        token_labels = token_labels[:actual_n_tokens]
+
+        for pos in range(actual_n_tokens):
             rows.append({
                 "question_id": comp_qid,
                 "token_position": pos,
@@ -849,7 +841,9 @@ def main():
     # Ground Truth
     # -----------------------------------------------------------------------
     print("\n[GT] Building ground truth ...")
-    gt_df = build_ground_truth(outputs, df_labeled, label_lookup)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    gt_df = build_ground_truth(outputs, df_labeled, label_lookup, tokenizer)
     gt_path = predictions_dir / "ground_truth.parquet"
     gt_df.to_parquet(gt_path, index=False)
     print(f"  Saved {gt_path} ({len(gt_df)} rows)")
