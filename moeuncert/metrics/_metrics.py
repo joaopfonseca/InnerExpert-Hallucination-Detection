@@ -336,8 +336,38 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
             entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
             metrics["entropies"] = entropies
 
-            # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t})))
-            metrics["perplexity"] = torch.exp(-log_likelihoods.mean(dim=1))  # (B,)
+            # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
+            # real generated tokens only. Generation outputs may be padded after
+            # early EOS with pad_token_id=eos, so exclude positions after the
+            # first EOS/pad token on a per-example basis.
+            stop_token_id = standardized_outputs.get(
+                "pad_token_id", standardized_outputs.get("eos_token_id")
+            )
+            if stop_token_id is not None:
+                gen_tokens = gen_token_ids.squeeze(-1)  # (B, gen_seq_len)
+                stop_mask = gen_tokens.eq(stop_token_id)
+                has_stop = stop_mask.any(dim=1)
+                first_stop_idx = torch.where(
+                    has_stop,
+                    stop_mask.to(torch.int64).argmax(dim=1),
+                    torch.full(
+                        (gen_tokens.shape[0],),
+                        gen_seq_len - 1,
+                        device=gen_tokens.device,
+                        dtype=torch.int64,
+                    ),
+                )
+                token_positions = torch.arange(
+                    gen_seq_len, device=gen_tokens.device
+                ).unsqueeze(0)
+                valid_token_mask = token_positions <= first_stop_idx.unsqueeze(1)
+            else:
+                valid_token_mask = torch.ones_like(log_likelihoods, dtype=torch.bool)
+
+            valid_lengths = valid_token_mask.sum(dim=1).clamp_min(1)
+            metrics["perplexity"] = torch.exp(
+                -(log_likelihoods * valid_token_mask).sum(dim=1) / valid_lengths
+            )  # (B,)
 
             # Last-layer hidden states for HaluNet embedding branch
             # hidden_states: (B, full_seq_len, n_layers, hidden_size)
