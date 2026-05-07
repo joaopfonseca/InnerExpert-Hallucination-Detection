@@ -112,11 +112,9 @@ log "PHASE 2: GENERATE LABELS"
 log "============================================================"
 log ""
 
-LABEL_YEARS="${GENERATION_YEARS[@]}"   # Label all generated data
-
 run_script "2.0-make-labels.py" \
     --model "${MODEL}" \
-    --years ${LABEL_YEARS} \
+    --years "${GENERATION_YEARS[@]}" \
     $( [ -n "${GENERATION_MONTH}" ] && echo "--month ${GENERATION_MONTH}" ) \
     --answer-threshold "${ANSWER_THRESHOLD}" \
     --deepinfra-model "${LABEL_MODEL}"
