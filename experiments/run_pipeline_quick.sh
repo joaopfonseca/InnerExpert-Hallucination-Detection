@@ -40,9 +40,6 @@ SAMPLING_BATCH_SIZE=2
 
 # --- LABELING ---
 ANSWER_THRESHOLD=0.5
-USE_LLM_TOKEN_LABELS="--use-llm-token-labels"
-MAX_LLM_ANSWER_SAMPLES=""
-MAX_LLM_TOKEN_SAMPLES=""
 
 # --- BASELINE FEATURES (required for HaluNet + perplexity) ---
 RETURN_BASELINE_FEATURES="--return-baseline-features"
@@ -94,18 +91,12 @@ run_script "1.1-generate-baseline-samples.py" \
 
 log "=== PHASE 2: Generate labels ==="
 
-LLM_ARGS=()
-[ -n "${USE_LLM_TOKEN_LABELS}" ] && LLM_ARGS+=("${USE_LLM_TOKEN_LABELS}")
-[ -n "${MAX_LLM_ANSWER_SAMPLES}" ] && LLM_ARGS+=(--max-llm-answer-samples "${MAX_LLM_ANSWER_SAMPLES}")
-[ -n "${MAX_LLM_TOKEN_SAMPLES}" ] && LLM_ARGS+=(--max-llm-token-samples "${MAX_LLM_TOKEN_SAMPLES}")
-
 run_script "2.0-make-labels.py" \
     --model "${MODEL}" \
     --years ${GENERATION_YEARS[@]} \
     $( [ -n "${GENERATION_MONTH}" ] && echo "--month ${GENERATION_MONTH}" ) \
     --answer-threshold "${ANSWER_THRESHOLD}" \
-    --deepinfra-model "${LABEL_MODEL}" \
-    "${LLM_ARGS[@]}"
+    --deepinfra-model "${LABEL_MODEL}"
 
 # ============================================================================
 # PHASE 3: TRAIN (2025 only)

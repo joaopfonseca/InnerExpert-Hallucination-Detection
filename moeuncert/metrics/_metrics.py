@@ -314,8 +314,9 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
 
     if "scores" in standardized_outputs:
         # Shape of output logits: (batch_size, sequence_length, vocab_size)
-        # Shape of top-k entropy scores: (batch_size, sequence_length)
-        metrics["scores_entropy"] = topk_entropy(standardized_outputs["scores"], k=5)
+        # Shape of entropy scores: (batch_size, sequence_length)
+        # Full-vocabulary entropy (k=None) for PredictiveEntropy correctness
+        metrics["scores_entropy"] = topk_entropy(standardized_outputs["scores"])
 
         # Baseline-specific features for trainable methods (e.g., HaluNet)
         if return_baseline_features:
@@ -337,6 +338,17 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
 
             # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t})))
             metrics["perplexity"] = torch.exp(-log_likelihoods.mean(dim=1))  # (B,)
+
+            # Last-layer hidden states for HaluNet embedding branch
+            # hidden_states: (B, full_seq_len, n_layers, hidden_size)
+            # Slice to generated positions only, keep only the last layer
+            if "hidden_states" not in standardized_outputs:
+                raise KeyError(
+                    "'hidden_states' required when return_baseline_features=True. "
+                    "Ensure the model was loaded with output_hidden_states=True."
+                )
+            gen_hidden = standardized_outputs["hidden_states"][:, -gen_seq_len:, -1, :]
+            metrics["last_hidden_states"] = gen_hidden  # (B, gen_seq_len, hidden_dim)
 
     if "expert_weights" in standardized_outputs:
         # Shape of expert weights: (batch_size, sequence_length, n_layers, n_experts)

@@ -14,6 +14,8 @@ from .utils import (
     read_and_collate_outputs,
     stratified_group_split,
     compute_metrics_at_threshold,
+    create_token_labels,
+    find_generation_boundaries,
 )
 from .data_loading import (
     load_labeled_dataset,
@@ -34,6 +36,8 @@ __all__ = [
     "read_and_collate_outputs",
     "stratified_group_split",
     "compute_metrics_at_threshold",
+    "create_token_labels",
+    "find_generation_boundaries",
     "load_labeled_dataset",
     "load_model_outputs",
     "load_multi_year_data",

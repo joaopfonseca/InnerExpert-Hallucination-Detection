@@ -64,6 +64,8 @@ from moeuncert.experiments import (
     load_multi_year_data,
     stratified_group_split,
     compute_metrics_at_threshold,
+    create_token_labels,
+    find_generation_boundaries,
 )
 
 
@@ -124,67 +126,6 @@ def build_feature_pipeline(
 # =============================================================================
 # Existing functions (unchanged from original)
 # =============================================================================
-
-def _create_token_labels(
-    generated_text: str,
-    hallucinated_spans: np.ndarray,
-    offset_mapping: List[Tuple[int, int]],
-) -> torch.Tensor:
-    """Create binary token labels based on hallucinated text spans."""
-    n_tokens = len(offset_mapping)
-    token_labels = torch.zeros(n_tokens, dtype=torch.long)
-
-    if not isinstance(hallucinated_spans, np.ndarray) or len(hallucinated_spans) == 0:
-        return token_labels
-
-    for span_text in hallucinated_spans:
-        span_start = generated_text.find(span_text)
-        if span_start == -1:
-            continue
-        span_end = span_start + len(span_text)
-
-        for token_idx, (char_start, char_end) in enumerate(offset_mapping):
-            if char_end > span_start and char_start < span_end:
-                token_labels[token_idx] = 1
-
-    return token_labels
-
-
-def _find_generation_boundaries(
-    input_ids: torch.Tensor,
-    sequences: torch.Tensor,
-) -> Tuple[int, int]:
-    """Find where the generated answer starts and ends."""
-    pad_token = input_ids[0].item()
-    non_pad_mask = input_ids != pad_token
-    input_content_start = (
-        torch.where(non_pad_mask)[0][0].item()
-        if torch.any(non_pad_mask) else len(input_ids)
-    )
-
-    non_zero_mask = input_ids != 0
-    input_content_end = (
-        torch.where(non_zero_mask)[0][-1].item() + 1
-        if torch.any(non_zero_mask) else 0
-    )
-
-    seq_non_pad_mask = sequences != pad_token
-    seq_content_start = (
-        torch.where(seq_non_pad_mask)[0][0].item()
-        if torch.any(seq_non_pad_mask) else len(sequences)
-    )
-
-    content_len = input_content_end - input_content_start
-    gen_start = seq_content_start + content_len
-
-    seq_zeros = torch.where(sequences[gen_start:] == 0)[0]
-    gen_end = (
-        gen_start + seq_zeros[0].item()
-        if len(seq_zeros) > 0 else len(sequences)
-    )
-
-    return gen_start, gen_end
-
 
 def _extract_token_features(
     all_outputs: Dict[str, torch.Tensor],
@@ -264,7 +205,7 @@ def prepare_training_data(
         )
         n_tokens = len(tokenized['input_ids'])
 
-        token_labels = _create_token_labels(
+        token_labels = create_token_labels(
             generated_text,
             row['llm_hallucinated_spans'],
             tokenized['offset_mapping'],
@@ -272,7 +213,7 @@ def prepare_training_data(
 
         input_ids = all_outputs['input_ids'][tensor_idx]
         sequences = all_outputs['sequences'][tensor_idx]
-        gen_start, gen_end = _find_generation_boundaries(input_ids, sequences)
+        gen_start, gen_end = find_generation_boundaries(input_ids, sequences)
 
         gen_len = gen_end - gen_start
         if gen_len < n_tokens:
