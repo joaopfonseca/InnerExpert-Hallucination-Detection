@@ -576,18 +576,49 @@ def evaluate_detector(
             else:
                 token_feats[key] = tensor.unsqueeze(0).expand(gen_len, -1)
 
-        # Merge into feature vector matching feature_names order
-        X_tokens = np.zeros((gen_len, len(feature_names)))
-        col_idx = 0
-        for key in feature_keys:
-            if key not in token_feats:
-                continue
-            arr = token_feats[key].numpy() if isinstance(token_feats[key], torch.Tensor) else np.array(token_feats[key])
+        # Merge into feature vector matching detector feature_names exactly
+        token_feat_arrays = {}
+        for key, value in token_feats.items():
+            arr = value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
             if arr.ndim == 1:
                 arr = arr[:, None]
-            n_cols = arr.shape[1]
-            X_tokens[:, col_idx : col_idx + n_cols] = arr
-            col_idx += n_cols
+            if arr.shape[0] != gen_len:
+                raise ValueError(
+                    f"Feature group '{key}' has {arr.shape[0]} rows, expected {gen_len}."
+                )
+            token_feat_arrays[key] = arr
+
+        X_tokens = np.zeros((gen_len, len(feature_names)), dtype=np.float32)
+        for col_idx, feature_name in enumerate(feature_names):
+            matched_key = next(
+                (key for key in feature_keys if feature_name.startswith(f"{key}_")),
+                None,
+            )
+            if matched_key is None:
+                raise ValueError(
+                    f"Unsupported detector feature '{feature_name}' in {detector_path}."
+                )
+
+            if matched_key not in token_feat_arrays:
+                raise ValueError(
+                    f"Missing required feature group '{matched_key}' for detector feature '{feature_name}'."
+                )
+
+            suffix = feature_name[len(matched_key) + 1:]
+            if not suffix.isdigit():
+                raise ValueError(
+                    f"Invalid detector feature name '{feature_name}': expected '<group>_<index>'."
+                )
+            feat_idx = int(suffix)
+
+            group_arr = token_feat_arrays[matched_key]
+            if feat_idx >= group_arr.shape[1]:
+                raise ValueError(
+                    f"Feature '{feature_name}' expects index {feat_idx}, "
+                    f"but '{matched_key}' provides {group_arr.shape[1]} column(s)."
+                )
+
+            X_tokens[:, col_idx] = group_arr[:, feat_idx]
 
         y_proba = model.predict_proba(X_tokens)[:, 1]
 
