@@ -309,9 +309,13 @@ def create_token_labels(
 
     if hallucinated_spans is None:
         return token_labels
+    if isinstance(hallucinated_spans, (float, np.floating)) and np.isnan(hallucinated_spans):
+        return token_labels
     if isinstance(hallucinated_spans, np.ndarray) and len(hallucinated_spans) == 0:
         return token_labels
-    if isinstance(hallucinated_spans, list) and len(hallucinated_spans) == 0:
+    if isinstance(hallucinated_spans, (list, tuple, set)) and len(hallucinated_spans) == 0:
+        return token_labels
+    if not isinstance(hallucinated_spans, (np.ndarray, list, tuple, set)):
         return token_labels
 
     for span_text in hallucinated_spans:
