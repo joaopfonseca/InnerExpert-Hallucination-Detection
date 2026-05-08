@@ -83,6 +83,13 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
             all_outputs["question_id"].append(question_ids)
             del batch["question_id"]
 
+            batch["input_ids"] = tokenizer.pad(
+                {"input_ids": batch["input_ids"]}, padding=True, return_tensors="pt"
+            )["input_ids"]
+            batch["attention_mask"] = tokenizer.pad(
+                {"input_ids": batch["attention_mask"]}, padding=True, return_tensors="pt"
+            )["input_ids"]
+
             input_ids = move_to_device(batch["input_ids"], device="cpu")
             if "input_ids" not in all_outputs:
                 all_outputs["input_ids"] = []
