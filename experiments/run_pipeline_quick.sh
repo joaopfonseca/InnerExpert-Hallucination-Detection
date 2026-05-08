@@ -46,7 +46,6 @@ RETURN_BASELINE_FEATURES="--return-baseline-features"
 
 # --- PATHS ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PYTHON="${SCRIPT_DIR}/../.venv/bin/python"
 
 # ============================================================================
 # Helpers
@@ -57,7 +56,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')]  $*"; }
 run_script() {
     local script="$1"; shift
     log "Running: ${script} $*"
-    "${VENV_PYTHON}" "${SCRIPT_DIR}/${script}" "$@"
+    python "${SCRIPT_DIR}/${script}" "$@"
 }
 
 # ============================================================================
