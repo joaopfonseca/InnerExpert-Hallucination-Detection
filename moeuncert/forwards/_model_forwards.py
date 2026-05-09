@@ -19,6 +19,9 @@ def forward_olmoe(self, hidden_states):
 
     Should replace the original forward method of the OlmoeSparseMoeBlock
     block.
+
+    Attributes top_k, num_experts, experts, norm_topk_prob are cached as
+    instance attrs by modify_moe_block to survive __class__ replacement.
     """
     batch_size, sequence_length, hidden_dim = hidden_states.shape
     hidden_states = hidden_states.view(-1, hidden_dim)

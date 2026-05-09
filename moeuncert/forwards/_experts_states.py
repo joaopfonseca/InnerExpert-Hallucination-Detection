@@ -46,11 +46,18 @@ def modify_moe_block(moe_block):
     Monkey-patch the forward method of the given MoE block to save intermediate
     expert hidden states.
 
-    Note that the exact implementation of the forward method may depend on the
-    specific architecture of the MoE block in your model. This is an attempt to
-    provide a general structure, but you may need to adjust it based on how
-    your model's MoE block is implemented.
+    Instance attributes (top_k, num_experts, experts, norm_topk_prob) are
+    captured from the original object and stored as explicit instance attrs
+    so that the monkey-patched forward can access them regardless of the
+    transformers version.
     """
+    # Capture needed attributes before the class swap destroys access via __class__
+    for attr in ("top_k", "num_experts", "experts", "norm_topk_prob"):
+        if not hasattr(moe_block, attr):
+            try:
+                setattr(moe_block, attr, getattr(moe_block.config, attr, None))
+            except Exception:
+                pass
 
     class MoEBlockCustom(type(moe_block)):
         pass
