@@ -25,14 +25,23 @@ def modify_model(model):
 def modify_model_forward_method(model):
     """
     Wrap the model's forward method to collect expert hidden states after each call.
+
+    Stored as a plain function (not types.MethodType) so nn.Module.__call__ invokes
+    it without double-binding. The original forward (accelerate hook) is captured
+    as a bound method in the closure.
     """
+    model._original_forward_custom = model.forward
+    orig_forward = model._original_forward_custom
 
-    class MoECustomForCausalLM(type(model)):
-        pass
+    def new_forward(*args, **kwargs):
+        outputs = orig_forward(*args, **kwargs)
+        if hasattr(model, 'model'):
+            outputs["experts_hidden"] = [
+                layer.mlp.last_experts_hidden for layer in model.model.layers
+            ]
+        return outputs
 
-    MoECustomForCausalLM.original_forward = model.forward
-    MoECustomForCausalLM.forward = main_forward_moe
-    model.__class__ = MoECustomForCausalLM
+    model.forward = new_forward
 
 
 def modify_moe_block(moe_block):
@@ -56,7 +65,9 @@ def reset_model(model):
     """
     Reset the modifications made to the model by `modify_model`.
     """
-    model.__class__ = type(model).__bases__[0]
+    if hasattr(model, "_original_forward_custom"):
+        model.forward = model._original_forward_custom
+        del model._original_forward_custom
 
     for module in model.modules():
         if isinstance(module, OlmoeSparseMoeBlock):
@@ -75,13 +86,3 @@ def reset_moe_block(moe_block):
     if hasattr(moe_block, "_original_old_forward"):
         moe_block._old_forward = moe_block._original_old_forward
         del moe_block._original_old_forward
-
-
-def main_forward_moe(self, *args, **kwargs):
-    """
-    Main forward method that collects expert hidden states after each forward pass.
-    """
-    outputs = self.original_forward(*args, **kwargs)
-    experts_hidden = [layer.mlp.last_experts_hidden for layer in self.model.layers]
-    outputs["experts_hidden"] = experts_hidden
-    return outputs

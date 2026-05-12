@@ -124,11 +124,17 @@ def run_batch_generation(tokenized_dataset, model_monitor, tokenizer, batch_size
 
 
 def compute_scores(candidates, references, bertscore, rouge, bleu):
+    safe_candidates = [c if c and c.strip() else "." for c in candidates]
+    safe_references = [
+        [r for r in ref if r and r.strip()] or ["."]
+        for ref in references
+    ]
+
     rouge_scores = rouge.compute(
         predictions=candidates, references=references, use_aggregator=False
     )
     bert_scores = bertscore.compute(
-        predictions=candidates, references=references, lang="en", verbose=True
+        predictions=safe_candidates, references=safe_references, lang="en", verbose=True
     )
     bleu_scores = [
         (
