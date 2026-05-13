@@ -35,7 +35,7 @@ from moeuncert.utils import (
     tokenize_realtimeqa,
 )
 from moeuncert.monitoring import MoEMonitor
-from moeuncert.metrics import compute_metrics
+from moeuncert.metrics import compute_baseline_features
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
@@ -122,10 +122,17 @@ def run_batch_sampling(tokenized_dataset, model_monitor, tokenizer, batch_size=2
                 )
                 del batch_on_device
 
-                outputs_processed = standardize_outputs(outputs, device="cpu")
-                # Compute metrics with baseline features (logits for Semantic Energy)
-                metrics = compute_metrics(outputs_processed, return_baseline_features=True)
-                outputs_processed.update(metrics)
+                outputs_processed = standardize_outputs(outputs, device=DEVICE)
+                # Compute only logit-level features (skips SVD hidden/attention scores)
+                features = compute_baseline_features(outputs_processed)
+                outputs_processed.update(features)
+                # Keep only what downstream baselines need, move to CPU
+                keep_keys = {"sequences", "scores", "log_likelihoods",
+                             "entropies", "perplexity"}
+                outputs_processed = move_to_device(
+                    {k: v for k, v in outputs_processed.items() if k in keep_keys},
+                    device="cpu",
+                )
                 del outputs
 
                 # Store each key with a sample index suffix
@@ -255,6 +262,7 @@ if __name__ == "__main__":
         model=model,
         tokenizer=tokenizer,
         output_router_logits=False,
+        output_experts_hidden=False,
     )
 
     # Tokenize dataset

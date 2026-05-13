@@ -285,6 +285,71 @@ def inverse_herfindahl_index(expert_usage, eps=1e-10):
     return 1.0 / torch.sum(expert_usage**2 + eps, dim=-1)
 
 
+def compute_baseline_features(standardized_outputs):
+    """Compute only the logit-level features needed by sampling-based baselines.
+
+    This is a lightweight subset of compute_metrics() that skips the expensive
+    SVD-based hidden_score and attention_score computations. Intended for
+    multi-sample generation scripts (e.g., 1.1-generate-baseline-samples.py)
+    where only sequences, log-likelihoods, entropies, and perplexity are needed
+    by downstream baselines (SemanticUncertainty, SemanticEnergy, SelfCheckGPT).
+
+    Args:
+        standardized_outputs: Dict from standardize_outputs() with keys
+            'scores' and 'sequences'.
+
+    Returns:
+        Dict with keys: log_likelihoods, entropies, perplexity.
+    """
+    features = {}
+    if "scores" not in standardized_outputs:
+        return features
+
+    scores = standardized_outputs["scores"]  # (B, gen_seq_len, vocab_size)
+    sequences = standardized_outputs.get("sequences")
+    gen_seq_len = scores.shape[1]
+
+    # Per-token log-likelihoods: log p(x_t | x_{<t}) for each generated token
+    log_probs = F.log_softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+
+    # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
+    probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+    entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
+    features["entropies"] = entropies
+
+    if sequences is not None:
+        # Gather log prob of the actual generated token
+        gen_token_ids = sequences[:, -gen_seq_len:].unsqueeze(-1).to(scores.device)
+        log_likelihoods = log_probs.gather(-1, gen_token_ids).squeeze(-1)  # (B, gen_seq_len)
+        features["log_likelihoods"] = log_likelihoods
+
+        # Answer-level perplexity (handles early EOS)
+        stop_token_id = standardized_outputs.get(
+            "pad_token_id", standardized_outputs.get("eos_token_id")
+        )
+        if stop_token_id is not None:
+            gen_tokens = gen_token_ids.squeeze(-1)
+            stop_mask = gen_tokens.eq(stop_token_id)
+            has_stop = stop_mask.any(dim=1)
+            first_stop_idx = torch.where(
+                has_stop,
+                stop_mask.to(torch.int64).argmax(dim=1),
+                torch.full((gen_tokens.shape[0],), gen_seq_len - 1,
+                           device=gen_tokens.device, dtype=torch.int64),
+            )
+            token_positions = torch.arange(gen_seq_len, device=gen_tokens.device).unsqueeze(0)
+            valid_token_mask = token_positions <= first_stop_idx.unsqueeze(1)
+        else:
+            valid_token_mask = torch.ones_like(log_likelihoods, dtype=torch.bool)
+
+        valid_lengths = valid_token_mask.sum(dim=1).clamp_min(1)
+        features["perplexity"] = torch.exp(
+            -(log_likelihoods * valid_token_mask).sum(dim=1) / valid_lengths
+        )  # (B,)
+
+    return features
+
+
 def compute_metrics(standardized_outputs, return_baseline_features=False):
     """Compute uncertainty metrics from standardized model outputs.
 
