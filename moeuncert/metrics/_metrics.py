@@ -324,9 +324,13 @@ def compute_baseline_features(standardized_outputs):
         features["log_likelihoods"] = log_likelihoods
 
         # Answer-level perplexity (handles early EOS)
-        stop_token_id = standardized_outputs.get(
-            "pad_token_id", standardized_outputs.get("eos_token_id")
-        )
+        # Prefer an explicit stop token id when provided by the caller, and
+        # retain backward-compatible fallback to pad/eos token ids.
+        stop_token_id = standardized_outputs.get("stop_token_id")
+        if stop_token_id is None:
+            stop_token_id = standardized_outputs.get(
+                "pad_token_id", standardized_outputs.get("eos_token_id")
+            )
         if stop_token_id is not None:
             gen_tokens = gen_token_ids.squeeze(-1)
             stop_mask = gen_tokens.eq(stop_token_id)
