@@ -8,6 +8,7 @@ from ._metrics import (
     expert_usage_gini_impurity,
     inverse_herfindahl_index,
     compute_metrics,
+    compute_baseline_features,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "expert_usage_gini_impurity",
     "inverse_herfindahl_index",
     "compute_metrics",
+    "compute_baseline_features",
 ]
