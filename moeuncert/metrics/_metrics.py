@@ -313,7 +313,7 @@ def compute_baseline_features(standardized_outputs):
     log_probs = F.log_softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
 
     # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
-    probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+    probs = log_probs.exp()  # (B, gen_seq_len, vocab_size)
     entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
     features["entropies"] = entropies
 
