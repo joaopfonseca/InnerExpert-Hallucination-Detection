@@ -123,6 +123,9 @@ def run_batch_sampling(tokenized_dataset, model_monitor, tokenizer, batch_size=2
                 del batch_on_device
 
                 outputs_processed = standardize_outputs(outputs, device=DEVICE)
+                # Provide EOS token id so perplexity is computed over real
+                # generated tokens only (excludes post-EOS padding).
+                outputs_processed["stop_token_id"] = tokenizer.eos_token_id
                 # Compute only logit-level features (skips SVD hidden/attention scores)
                 features = compute_baseline_features(outputs_processed)
                 outputs_processed.update(features)
@@ -261,6 +264,8 @@ if __name__ == "__main__":
     model_monitor = MoEMonitor(
         model=model,
         tokenizer=tokenizer,
+        output_attentions=False,
+        output_hidden_states=False,
         output_router_logits=False,
         output_experts_hidden=False,
     )
