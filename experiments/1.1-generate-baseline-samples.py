@@ -129,13 +129,18 @@ def run_batch_sampling(tokenized_dataset, model_monitor, tokenizer, batch_size=2
                 # Compute only logit-level features (skips SVD hidden/attention scores)
                 features = compute_baseline_features(outputs_processed)
                 outputs_processed.update(features)
+                # Keep only generated tokens (slice off prompt prefix)
+                gen_len = features["log_likelihoods"].shape[1]
+                generated_ids = outputs_processed["sequences"][:, -gen_len:]
                 # Keep only what downstream baselines need, move to CPU
-                keep_keys = {"sequences", "scores", "log_likelihoods",
-                             "entropies", "perplexity"}
-                outputs_processed = move_to_device(
-                    {k: v for k, v in outputs_processed.items() if k in keep_keys},
-                    device="cpu",
-                )
+                keep = {
+                    "sequences": generated_ids,
+                    "scores": outputs_processed["scores"],
+                    "log_likelihoods": features["log_likelihoods"],
+                    "entropies": features["entropies"],
+                    "perplexity": features["perplexity"],
+                }
+                outputs_processed = move_to_device(keep, device="cpu")
                 del outputs
 
                 # Store each key with a sample index suffix
