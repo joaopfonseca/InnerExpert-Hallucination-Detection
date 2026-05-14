@@ -342,18 +342,32 @@ def compute_baseline_features(standardized_outputs):
             first_stop_idx = torch.where(
                 has_stop,
                 stop_mask.to(torch.int64).argmax(dim=1),
-                torch.full((gen_tokens.shape[0],), gen_seq_len - 1,
-                           device=gen_tokens.device, dtype=torch.int64),
+                torch.full(
+                    (gen_tokens.shape[0],),
+                    gen_seq_len - 1,
+                    device=gen_tokens.device,
+                    dtype=torch.int64,
+                ),
             )
-            token_positions = torch.arange(gen_seq_len, device=gen_tokens.device).unsqueeze(0)
+            token_positions = torch.arange(
+                gen_seq_len, device=gen_tokens.device
+            ).unsqueeze(0)
             valid_token_mask = token_positions <= first_stop_idx.unsqueeze(1)
         else:
-            valid_token_mask = torch.ones_like(log_likelihoods, dtype=torch.bool)
+            valid_token_mask = torch.ones_like(
+                log_likelihoods, dtype=torch.bool
+            )
 
         # Mask log-likelihoods and entropies so post-EOS positions are
         # zeroed out before they reach downstream aggregators.
-        features["log_likelihoods"] = log_likelihoods * valid_token_mask
-        features["entropies"] = entropies * valid_token_mask
+        # Use masked_fill to avoid -inf * 0 = NaN when log_likelihoods
+        # contain -inf from top_p filtering.
+        features["log_likelihoods"] = log_likelihoods.masked_fill(
+            ~valid_token_mask, 0.0
+        )
+        features["entropies"] = entropies.masked_fill(
+            ~valid_token_mask, 0.0
+        )
 
         # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
         # real generated tokens only. Use masked_fill instead of
@@ -444,7 +458,10 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
 
             # Mask log-likelihoods and entropies so post-EOS positions are
             # zeroed out before they reach downstream aggregators.
-            metrics["log_likelihoods"] = log_likelihoods * valid_token_mask
+            # Use masked_fill to avoid -inf * 0 = NaN.
+            metrics["log_likelihoods"] = log_likelihoods.masked_fill(
+                ~valid_token_mask, 0.0
+            )
 
             # NaN-safe per-token full-vocabulary entropies.
             # top_p filtering leaves -inf in scores for filtered vocab
