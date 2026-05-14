@@ -398,17 +398,10 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
             # Gather log prob of the actual generated token
             gen_token_ids = sequences[:, -gen_seq_len:].unsqueeze(-1)  # (B, gen_seq_len, 1)
             log_likelihoods = log_probs.gather(-1, gen_token_ids).squeeze(-1)  # (B, gen_seq_len)
-            metrics["log_likelihoods"] = log_likelihoods
 
-            # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
-            probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
-            entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
-            metrics["entropies"] = entropies
-
-            # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
-            # real generated tokens only. Generation outputs may be padded after
-            # early EOS with pad_token_id=eos, so exclude positions after the
-            # first EOS/pad token on a per-example basis.
+            # Compute a per-example valid-token mask so that downstream
+            # consumers (e.g. SemanticUncertainty) do not sum over padded
+            # positions after early EOS.
             stop_token_id = standardized_outputs.get(
                 "pad_token_id", standardized_outputs.get("eos_token_id")
             )
@@ -433,6 +426,19 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
             else:
                 valid_token_mask = torch.ones_like(log_likelihoods, dtype=torch.bool)
 
+            # Mask log-likelihoods and entropies so post-EOS positions are
+            # zeroed out before they reach downstream aggregators.
+            metrics["log_likelihoods"] = log_likelihoods * valid_token_mask
+
+            # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
+            probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
+            entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
+            metrics["entropies"] = entropies * valid_token_mask
+
+            # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
+            # real generated tokens only. Generation outputs may be padded after
+            # early EOS with pad_token_id=eos, so exclude positions after the
+            # first EOS/pad token on a per-example basis.
             valid_lengths = valid_token_mask.sum(dim=1).clamp_min(1)
             metrics["perplexity"] = torch.exp(
                 -(log_likelihoods * valid_token_mask).sum(dim=1) / valid_lengths
