@@ -296,10 +296,14 @@ def compute_baseline_features(standardized_outputs):
 
     Args:
         standardized_outputs: Dict from standardize_outputs() with keys
-            'scores' and 'sequences'.
+            'scores' and 'sequences'. May also include optional keys:
+            'stop_token_id' (preferred), 'pad_token_id', or 'eos_token_id'
+            for correct early-EOS perplexity masking. If none are provided,
+            perplexity is computed over the full generated sequence.
 
     Returns:
         Dict with keys: log_likelihoods, entropies, perplexity.
+        All per-token values are zero-masked after the first stop token.
     """
     features = {}
     if "scores" not in standardized_outputs:
@@ -312,20 +316,20 @@ def compute_baseline_features(standardized_outputs):
     # Per-token log-likelihoods: log p(x_t | x_{<t}) for each generated token
     log_probs = F.log_softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
 
-    # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
+    # NaN-safe per-token full-vocabulary entropies.
+    # top_p filtering leaves -inf in scores for filtered vocab entries;
+    # probs=exp(-inf)=0, so 0 * -inf = NaN. Use nan_to_num to guard.
     probs = log_probs.exp()  # (B, gen_seq_len, vocab_size)
-    entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
-    features["entropies"] = entropies
+    entropies = -(probs * log_probs).nan_to_num(nan=0.0).sum(dim=-1)  # (B, gen_seq_len)
 
     if sequences is not None:
         # Gather log prob of the actual generated token
         gen_token_ids = sequences[:, -gen_seq_len:].unsqueeze(-1).to(scores.device)
         log_likelihoods = log_probs.gather(-1, gen_token_ids).squeeze(-1)  # (B, gen_seq_len)
-        features["log_likelihoods"] = log_likelihoods
 
-        # Answer-level perplexity (handles early EOS)
-        # Prefer an explicit stop token id when provided by the caller, and
-        # retain backward-compatible fallback to pad/eos token ids.
+        # Compute a per-example valid-token mask so that downstream
+        # consumers (e.g. SemanticUncertainty) do not sum over padded
+        # positions after early EOS.
         stop_token_id = standardized_outputs.get("stop_token_id")
         if stop_token_id is None:
             stop_token_id = standardized_outputs.get(
@@ -346,10 +350,22 @@ def compute_baseline_features(standardized_outputs):
         else:
             valid_token_mask = torch.ones_like(log_likelihoods, dtype=torch.bool)
 
+        # Mask log-likelihoods and entropies so post-EOS positions are
+        # zeroed out before they reach downstream aggregators.
+        features["log_likelihoods"] = log_likelihoods * valid_token_mask
+        features["entropies"] = entropies * valid_token_mask
+
+        # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
+        # real generated tokens only. Use masked_fill instead of
+        # multiplication to avoid -inf * 0 = NaN on masked positions
+        # when log_likelihoods contain -inf from top_p filtering.
+        masked_ll = log_likelihoods.masked_fill(~valid_token_mask, 0.0)
         valid_lengths = valid_token_mask.sum(dim=1).clamp_min(1)
         features["perplexity"] = torch.exp(
-            -(log_likelihoods * valid_token_mask).sum(dim=1) / valid_lengths
+            -masked_ll.sum(dim=1) / valid_lengths
         )  # (B,)
+    else:
+        features["entropies"] = entropies
 
     return features
 
@@ -430,18 +446,21 @@ def compute_metrics(standardized_outputs, return_baseline_features=False):
             # zeroed out before they reach downstream aggregators.
             metrics["log_likelihoods"] = log_likelihoods * valid_token_mask
 
-            # Per-token full-vocabulary entropies: H_t = -Σ_v p(v) log p(v)
-            probs = F.softmax(scores, dim=-1)  # (B, gen_seq_len, vocab_size)
-            entropies = -(probs * log_probs).sum(dim=-1)  # (B, gen_seq_len)
-            metrics["entropies"] = entropies * valid_token_mask
+            # NaN-safe per-token full-vocabulary entropies.
+            # top_p filtering leaves -inf in scores for filtered vocab
+            # entries; probs=exp(-inf)=0, so 0 * -inf = NaN.
+            probs = log_probs.exp()  # (B, gen_seq_len, vocab_size)
+            entropies = -(probs * log_probs).nan_to_num(nan=0.0).sum(dim=-1)
+            metrics["entropies"] = (entropies * valid_token_mask)  # (B, gen_seq_len)
 
             # Answer-level perplexity: exp(-mean(log p(x_t | x_{<t}))) over
-            # real generated tokens only. Generation outputs may be padded after
-            # early EOS with pad_token_id=eos, so exclude positions after the
-            # first EOS/pad token on a per-example basis.
+            # real generated tokens only. Use masked_fill instead of
+            # multiplication to avoid -inf * 0 = NaN on masked positions
+            # when log_likelihoods contain -inf from top_p filtering.
+            masked_ll = log_likelihoods.masked_fill(~valid_token_mask, 0.0)
             valid_lengths = valid_token_mask.sum(dim=1).clamp_min(1)
             metrics["perplexity"] = torch.exp(
-                -(log_likelihoods * valid_token_mask).sum(dim=1) / valid_lengths
+                -masked_ll.sum(dim=1) / valid_lengths
             )  # (B,)
 
             # Last-layer hidden states for HaluNet embedding branch

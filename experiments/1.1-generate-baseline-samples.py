@@ -299,5 +299,4 @@ if __name__ == "__main__":
     )
 
     print(f"Sampled outputs saved to {sample_dir}")
-    print(f"Keys per sample: sequences, scores, log_likelihoods, entropies, "
-          f"hidden_scores, attention_scores, etc.")
+    print(f"Keys per sample: sequences, scores, log_likelihoods, entropies, perplexity")
