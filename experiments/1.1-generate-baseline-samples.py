@@ -123,25 +123,33 @@ def run_batch_sampling(tokenized_dataset, model_monitor, tokenizer, batch_size=2
                 del batch_on_device
 
                 outputs_processed = standardize_outputs(outputs, device=DEVICE)
+                del outputs  # release raw GPU output tensors immediately
+
                 # Provide EOS token id so perplexity is computed over real
                 # generated tokens only (excludes post-EOS padding).
                 outputs_processed["stop_token_id"] = tokenizer.eos_token_id
                 # Compute only logit-level features (skips SVD hidden/attention scores)
                 features = compute_baseline_features(outputs_processed)
-                outputs_processed.update(features)
+                valid_mask = features.pop("valid_token_mask")  # (B, gen_seq_len)
                 # Keep only generated tokens (slice off prompt prefix)
                 gen_len = features["log_likelihoods"].shape[1]
                 generated_ids = outputs_processed["sequences"][:, -gen_len:]
+                scores = outputs_processed["scores"]
+                # Zero post-EOS positions so downstream loaders don't treat
+                # pad tokens as real generated content
+                generated_ids = generated_ids.masked_fill(~valid_mask, 0)
+                scores = scores.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
                 # Keep only what downstream baselines need, move to CPU
                 keep = {
                     "sequences": generated_ids,
-                    "scores": outputs_processed["scores"],
+                    "scores": scores,
                     "log_likelihoods": features["log_likelihoods"],
                     "entropies": features["entropies"],
                     "perplexity": features["perplexity"],
                 }
                 outputs_processed = move_to_device(keep, device="cpu")
-                del outputs
+                # Release GPU references immediately
+                del keep, features, generated_ids, scores, valid_mask
 
                 # Store each key with a sample index suffix
                 for key, output in outputs_processed.items():

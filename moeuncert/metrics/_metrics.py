@@ -302,8 +302,11 @@ def compute_baseline_features(standardized_outputs):
             perplexity is computed over the full generated sequence.
 
     Returns:
-        Dict with keys: log_likelihoods, entropies, perplexity.
+        Dict with keys: log_likelihoods, entropies, perplexity,
+        valid_token_mask (bool, (B, gen_seq_len)).
         All per-token values are zero-masked after the first stop token.
+        valid_token_mask can be used to zero post-EOS positions in
+        sequences and scores before saving.
     """
     features = {}
     if "scores" not in standardized_outputs:
@@ -378,8 +381,14 @@ def compute_baseline_features(standardized_outputs):
         features["perplexity"] = torch.exp(
             -masked_ll.sum(dim=1) / valid_lengths
         )  # (B,)
+        # Expose mask so callers can zero post-EOS positions in
+        # sequences and scores before saving.
+        features["valid_token_mask"] = valid_token_mask
     else:
         features["entropies"] = entropies
+        features["valid_token_mask"] = torch.ones(
+            gen_seq_len, device=scores.device, dtype=torch.bool
+        ).unsqueeze(0).expand(scores.shape[0], -1)
 
     return features
 
