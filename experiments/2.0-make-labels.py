@@ -309,6 +309,7 @@ def generate_llm_labels_and_spans(
         input_file_id=uploaded_file.id,
         endpoint="/v1/chat/completions",
         completion_window="24h",
+        metadata={},
     )
     print(f"  Created batch job: {batch.id}")
 
