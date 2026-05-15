@@ -156,8 +156,8 @@ PROMPT_TEMPLATE = (
     "Given a question, evidence, and model answer, decide whether the answer contains "
     "unsupported or hallucinated content.\n"
     "Return valid JSON only with this exact schema:\n"
-    '{"label": 1 or 0, '
-    '"hallucinated_spans": ["exact substring from answer", ...]}\n'
+    '{{"label": 1 or 0, '
+    '"hallucinated_spans": ["exact substring from answer", ...]}}\n'
     "Rules:\n"
     "- label = 1 means hallucinated/unsupported, label = 0 means grounded/correct.\n"
     "- hallucinated_spans must be exact substrings from the answer.\n"
