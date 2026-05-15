@@ -141,7 +141,7 @@ def compute_scores(candidates, references, bertscore, rouge, bleu):
             bleu.compute(predictions=[candidate], references=[reference])["bleu"]
             if candidate
             and (reference if isinstance(reference, str) else all(reference))
-            else np.nan
+            else 0.0
         )
         for candidate, reference in zip(candidates, references)
     ]

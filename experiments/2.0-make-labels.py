@@ -106,7 +106,7 @@ def compute_metric_thresholds(
     y_true = df["evidence_present"].to_numpy()
     thresholds = {}
     for col in metric_cols:
-        scores = df[col].to_numpy()
+        scores = pd.to_numeric(df[col], errors="coerce").fillna(0.0).to_numpy()
         threshold, f1 = optimal_threshold(y_true, scores)
         direction = "ge" if scores[y_true == 1].mean() >= scores[y_true == 0].mean() else "lt"
         thresholds[col] = {"threshold": threshold, "direction": direction, "f1": f1}
