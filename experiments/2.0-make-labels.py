@@ -51,7 +51,6 @@ as scripts 3.0 and 3.1.
 """
 
 import argparse
-import io
 import json
 import os
 import re
@@ -168,73 +167,20 @@ PROMPT_TEMPLATE = (
 )
 
 
-def _build_batch_requests(
-    df: pd.DataFrame,
-    model: str,
-    work_index: List[int],
-) -> List[str]:
-    """Build JSONL lines for the OpenAI Batch API, one per row."""
-    lines = []
-    for idx in work_index:
-        row = df.loc[idx]
-        prompt = PROMPT_TEMPLATE.format(
-            question=row.get("question_sentence", ""),
-            evidence=row.get("evidence", ""),
-            answer=row.get("generated_answer", ""),
-        )
-        request = {
-            "custom_id": f"row-{idx}",
-            "method": "post",
-            "url": "/v1/chat/completions",
-            "body": {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "Return concise, valid JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
-        }
-        lines.append(json.dumps(request))
-    return lines
+def _parse_response_content(content: str) -> Tuple[Optional[int], List[str]]:
+    """Parse a chat completion response content string.
 
-
-def _parse_batch_response_line(
-    line: str,
-) -> Tuple[Optional[int], Optional[int], List[str]]:
-    """Parse a single line from a batch result JSONL file.
-
-    Returns (row_index, label, spans) where row_index comes from custom_id,
-    label is 0/1 or None, and spans is a list of hallucinated substring texts.
+    Returns (label, spans) where label is 0/1 or None,
+    and spans is a list of hallucinated substring texts.
     """
-    try:
-        result = json.loads(line)
-    except json.JSONDecodeError:
-        return None, None, []
-
-    custom_id = result.get("custom_id", "")
-    idx_match = re.search(r"row-(\d+)", custom_id)
-    idx = int(idx_match.group(1)) if idx_match else None
-
-    if result.get("error"):
-        return idx, None, []
-
-    response = result.get("response", {})
-    body = response.get("body", {})
-    choices = body.get("choices", [])
-    if not choices:
-        return idx, None, []
-
-    content = choices[0].get("message", {}).get("content", "").strip()
     match = re.search(r"\{.*\}", content, flags=re.DOTALL)
     if not match:
-        return idx, None, []
+        return None, []
 
     try:
         obj = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return idx, None, []
+        return None, []
 
     label_obj = obj.get("label", None)
     label: Optional[int] = int(label_obj) if label_obj in (0, 1) else None
@@ -243,7 +189,7 @@ def _parse_batch_response_line(
     if isinstance(spans_obj, list):
         spans = [str(x) for x in spans_obj if str(x).strip()]
 
-    return idx, label, spans
+    return label, spans
 
 
 def generate_llm_labels_and_spans(
@@ -251,15 +197,19 @@ def generate_llm_labels_and_spans(
     client: OpenAI,
     model: str,
     max_samples: Optional[int] = None,
-    poll_interval: int = 10,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
 ) -> Tuple[pd.Series, Dict[int, List[str]]]:
     """
-    Generate answer-level labels and token-level hallucinated spans via DeepInfra Batch API.
+    Generate answer-level labels and token-level hallucinated spans via DeepInfra.
 
-    Instead of making one API call per sample sequentially, this submits all requests
-    as a single batch job, polls until completion, and parses the results. This is
-    dramatically faster for large datasets since all requests are processed in parallel
-    on the server side.
+    Sends one chat completion request per sample sequentially. Each request
+    includes the question, evidence, and model answer, and the LLM responds
+    with a JSON object containing a hallucination label and any hallucinated
+    spans.
+
+    Failed requests are retried up to max_retries times with an exponential
+    backoff delay.
 
     Parameters
     ----------
@@ -271,8 +221,10 @@ def generate_llm_labels_and_spans(
         Model name on DeepInfra (e.g. "zai-org/GLM-5.1").
     max_samples : int, optional
         Maximum number of rows to label. None means all rows.
-    poll_interval : int
-        Seconds to wait between batch status checks (default: 10).
+    max_retries : int
+        Maximum retry attempts for failed API calls (default: 3).
+    retry_delay : float
+        Base delay in seconds between retries, doubled on each attempt (default: 2.0).
 
     Returns
     -------
@@ -291,64 +243,59 @@ def generate_llm_labels_and_spans(
     if not work_index:
         return labels, spans_by_row
 
-    print(f"Submitting batch of {len(work_index)} requests to DeepInfra...")
+    n_total = len(work_index)
+    n_success = 0
+    n_failed = 0
+    print(f"Labelling {n_total} rows via DeepInfra (model={model})...")
 
-    # Build batch request JSONL
-    request_lines = _build_batch_requests(df, model, work_index)
-    batch_file_content = "\n".join(request_lines)
+    pbar = tqdm(work_index, desc="LLM labelling", unit="row")
+    for idx in pbar:
+        row = df.loc[idx]
+        prompt = PROMPT_TEMPLATE.format(
+            question=row.get("question_sentence", ""),
+            evidence=row.get("evidence", ""),
+            answer=row.get("generated_answer", ""),
+        )
 
-    # Upload the request file
-    uploaded_file = client.files.create(
-        file=io.BytesIO(batch_file_content.encode("utf-8")),
-        purpose="batch",
-    )
-    print(f"  Uploaded request file: {uploaded_file.id}")
+        label = None
+        spans = []
 
-    # Create the batch job
-    batch = client.batches.create(
-        input_file_id=uploaded_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={},
-    )
-    print(f"  Created batch job: {batch.id}")
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "Return concise, valid JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                )
+                content = response.choices[0].message.content.strip()
+                label, spans = _parse_response_content(content)
 
-    # Poll until completed, in_progress, failed, expired, or cancelled
-    status = batch.status
-    while status not in ("completed", "failed", "expired", "cancelled"):
-        time.sleep(poll_interval)
-        batch = client.batches.retrieve(batch.id)
-        status = batch.status
-        completed = getattr(batch, "request_counts", None)
-        total = len(work_index)
-        done = completed.completed if completed else "?"
-        failed = completed.failed if completed else "?"
-        print(f"  Batch {batch.id}: status={status}, completed={done}, failed={failed}, total={total}")
+                if label is not None:
+                    break  # Success — got a valid label
+                # label is None: response was valid but couldn't be parsed as 0/1
+                # Retry to get a parsable response
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)
+                    time.sleep(delay)
+                else:
+                    print(f"  Row {idx}: failed after {max_retries} attempts: {e}")
 
-    if status != "completed":
-        print(f"  Batch {batch.id} ended with status: {status}")
-        if hasattr(batch, "error_file_id") and batch.error_file_id:
-            error_content = client.files.content(batch.error_file_id).text
-            print(f"  Errors:\n{error_content[:500]}")
-        return labels, spans_by_row
-
-    print(f"  Batch {batch.id} completed. Downloading results...")
-
-    # Download and parse results
-    output_content = client.files.content(batch.output_file_id).text
-    n_parsed = 0
-    for line in output_content.strip().split("\n"):
-        if not line.strip():
-            continue
-        idx, label, spans = _parse_batch_response_line(line)
-        if idx is not None and idx in labels.index:
-            if label is not None:
-                labels.loc[idx] = label
+        if label is not None:
+            labels.loc[idx] = label
             if spans:
                 spans_by_row[idx] = spans
-            n_parsed += 1
+            n_success += 1
+        else:
+            n_failed += 1
 
-    print(f"  Parsed {n_parsed}/{len(work_index)} results successfully.")
+        pbar.set_postfix(success=n_success, failed=n_failed)
+
+    print(f"  Done: {n_success} labelled, {n_failed} failed out of {n_total} rows.")
 
     return labels, spans_by_row
 
@@ -408,12 +355,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--llm-poll-interval",
-        type=int,
-        default=10,
-        help="Seconds to wait between batch status checks (default: 10).",
-    )
-    parser.add_argument(
         "--min-llm-train-samples",
         type=int,
         default=10,
@@ -468,7 +409,6 @@ if __name__ == "__main__":
         client=llm_client,
         model=args.deepinfra_model,
         max_samples=args.max_llm_answer_samples,
-        poll_interval=args.llm_poll_interval,
     )
     df["label_llm_answer"] = llm_labels
     df["llm_hallucinated_spans"] = df.index.map(llm_spans)
