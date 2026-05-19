@@ -14,6 +14,93 @@ import torch
 from .paths import resolve_model_slug, resolve_dataset_slug
 
 
+def _parse_dataset_dir_name(name: str) -> Optional[Tuple[List[int], Optional[int]]]:
+    """Parse a realtimeqa dataset directory name into years and month."""
+    if not name.startswith("realtimeqa-"):
+        return None
+
+    parts = name.split("-")[1:]
+    if not parts:
+        return None
+
+    month = None
+    if len(parts) >= 2 and parts[-1].isdigit():
+        candidate_month = int(parts[-1])
+        if 1 <= candidate_month <= 12 and len(parts[-1]) == 2:
+            month = candidate_month
+            parts = parts[:-1]
+
+    if not parts or any((not p.isdigit() or len(p) != 4) for p in parts):
+        return None
+
+    years = [int(p) for p in parts]
+    if month is not None and len(years) != 1:
+        return None
+
+    return years, month
+
+
+def _find_combined_dataset_dir(
+    data_root: Path,
+    model_slug: str,
+    years: List[int],
+    month: Optional[int],
+) -> Optional[Tuple[Path, List[int]]]:
+    """Find a dataset directory that covers the requested years."""
+    candidates: List[Tuple[Path, List[int]]] = []
+    for dataset_dir in data_root.iterdir():
+        if not dataset_dir.is_dir():
+            continue
+        parsed = _parse_dataset_dir_name(dataset_dir.name)
+        if parsed is None:
+            continue
+        candidate_years, candidate_month = parsed
+        if month is not None:
+            if candidate_month != month or candidate_years != years:
+                continue
+        else:
+            if candidate_month is not None:
+                continue
+            if not set(years).issubset(set(candidate_years)):
+                continue
+        model_dir = dataset_dir / model_slug
+        if model_dir.exists():
+            candidates.append((model_dir, candidate_years))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: len(item[1]))
+    return candidates[0]
+
+
+def _filter_outputs_by_question_ids(
+    outputs: Dict[str, torch.Tensor],
+    question_ids: List[str],
+) -> Dict[str, torch.Tensor]:
+    """Filter model outputs to only the specified question IDs."""
+    if "question_id" not in outputs:
+        raise KeyError("outputs must contain 'question_id' for filtering.")
+
+    allowed = {str(qid) for qid in question_ids}
+    output_qids = [str(qid) for qid in outputs["question_id"]]
+    keep_indices = [idx for idx, qid in enumerate(output_qids) if qid in allowed]
+
+    if len(keep_indices) == len(output_qids):
+        return outputs
+
+    idx_tensor = torch.tensor(keep_indices, dtype=torch.long)
+    filtered: Dict[str, torch.Tensor] = {}
+    for key, value in outputs.items():
+        if isinstance(value, torch.Tensor):
+            filtered[key] = value.index_select(0, idx_tensor)
+        elif isinstance(value, list):
+            filtered[key] = [value[i] for i in keep_indices]
+        else:
+            filtered[key] = value
+    return filtered
+
+
 def load_labeled_dataset(
     data_dir: Path,
     label_model: Optional[str] = None,
@@ -164,6 +251,36 @@ def load_multi_year_data(
             continue
 
     if not all_dfs:
+        combined = _find_combined_dataset_dir(data_root, model_slug, years, month)
+        if combined is not None:
+            data_dir, dataset_years = combined
+            print(
+                f"  Using combined dataset: {data_dir.parent} "
+                f"(covers years {dataset_years})"
+            )
+            df = load_labeled_dataset(data_dir, label_model)
+            outputs = load_model_outputs(data_dir)
+
+            if set(dataset_years) != set(years):
+                if "year" not in df.columns:
+                    raise ValueError(
+                        f"Dataset {data_dir.parent} spans years {dataset_years}, but "
+                        "the labeled parquet has no 'year' column to filter. "
+                        "Re-generate per-year data or provide a dataset that "
+                        "matches the requested years."
+                    )
+                df = df[df["year"].isin(years)].copy()
+                outputs = _filter_outputs_by_question_ids(
+                    outputs, df["question_id"].astype(str).tolist()
+                )
+            elif "year" not in df.columns and len(years) == 1:
+                df["year"] = years[0]
+
+            if df.empty:
+                raise ValueError(f"No data found for years {years}")
+
+            return df.reset_index(drop=True), outputs
+
         raise ValueError(f"No data found for years {years}")
 
     # Concatenate dataframes
@@ -258,6 +375,7 @@ def load_sampled_outputs(
     all_responses_by_qid: Dict[str, List[str]] = {}
     all_logprobs_by_qid: Dict[str, List[List[float]]] = {}
     all_logits_by_qid: Dict[str, List[List[float]]] = {}
+    found_any = False
 
     print(f"\nLoading sampled outputs for years: {years}")
     for year in years:
@@ -272,6 +390,7 @@ def load_sampled_outputs(
         if not batch_files:
             print(f"  WARNING: No batch files in {sampled_dir}")
             continue
+        found_any = True
 
         # Read and collate all batches
         outputs = read_and_collate_outputs(
@@ -333,6 +452,64 @@ def load_sampled_outputs(
                 all_logprobs_by_qid[qid] = log_probs
                 if logits:
                     all_logits_by_qid[qid] = logits
+
+    if not found_any:
+        combined = _find_combined_dataset_dir(data_root, model_slug, years, month)
+        if combined is not None:
+            data_dir, dataset_years = combined
+            sampled_dir = data_dir / "sampled_generation"
+            if sampled_dir.exists():
+                print(
+                    f"  Using combined dataset: {data_dir.parent} "
+                    f"(covers years {dataset_years})"
+                )
+                batch_files = sorted(sampled_dir.glob("sampled_outputs__batch_*.pt"))
+                if batch_files:
+                    outputs = read_and_collate_outputs(
+                        batch_files, tokenizer=None, get_keys=None
+                    )
+                    print(
+                        f"  Loaded {len(batch_files)} batch files from combined dataset"
+                    )
+                    qids = outputs["question_id"]
+                    for idx, qid in enumerate(qids):
+                        qid = str(qid)
+                        responses = []
+                        log_probs = []
+                        logits = []
+
+                        for s in range(num_samples):
+                            seq_key = f"sequences_sample{s}"
+                            ll_key = f"log_likelihoods_sample{s}"
+                            scores_key = f"scores_sample{s}"
+
+                            if seq_key not in outputs or ll_key not in outputs:
+                                continue
+
+                            gen_tokens = outputs[seq_key][idx]
+                            gen_tokens = gen_tokens[gen_tokens != 0]
+
+                            response_tokens = gen_tokens.tolist()
+                            responses.append(response_tokens)
+
+                            ll = outputs[ll_key][idx].tolist()
+                            log_probs.append(ll)
+
+                            if scores_key in outputs:
+                                scores = outputs[scores_key][idx]
+                                gen_len = min(len(ll), scores.shape[0])
+                                if gen_len > 0 and len(gen_tokens) > 0:
+                                    token_ids = gen_tokens[:gen_len]
+                                    response_logits = scores[:gen_len].gather(
+                                        -1, token_ids.unsqueeze(-1).to(scores.device)
+                                    ).squeeze(-1).tolist()
+                                    logits.append(response_logits)
+
+                        if responses:
+                            all_responses_by_qid[qid] = responses
+                            all_logprobs_by_qid[qid] = log_probs
+                            if logits:
+                                all_logits_by_qid[qid] = logits
 
     print(f"  Total questions with sampled data: {len(all_responses_by_qid)}")
     return {
