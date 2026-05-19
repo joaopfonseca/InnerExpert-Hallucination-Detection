@@ -190,7 +190,17 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
     for key in parts[0].keys():
         values = [p[key] for p in parts if key in p]
         if all(isinstance(v, torch.Tensor) for v in values):
-            combined[key] = torch.cat(values, dim=0)
+            if all(v.shape == values[0].shape for v in values):
+                combined[key] = torch.cat(values, dim=0)
+            else:
+                max_sizes = [max(v.shape[d] for v in values) for d in range(values[0].dim())]
+                padded = []
+                for t in values:
+                    pad_cfg = []
+                    for d in range(t.dim() - 1, 0, -1):
+                        pad_cfg += [0, max_sizes[d] - t.shape[d]]
+                    padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
+                combined[key] = torch.cat(padded, dim=0)
         else:
             merged: List = []
             for v in values:
