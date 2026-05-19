@@ -101,6 +101,25 @@ def _filter_outputs_by_question_ids(
     return filtered
 
 
+def _ensure_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure year/month columns exist using question_date when available."""
+    if "year" in df.columns and "month" in df.columns:
+        return df
+    if "question_date" not in df.columns:
+        return df
+
+    dates = pd.to_datetime(df["question_date"], errors="coerce")
+    if dates.isna().all():
+        return df
+
+    df = df.copy()
+    if "year" not in df.columns:
+        df["year"] = dates.dt.year
+    if "month" not in df.columns:
+        df["month"] = dates.dt.month
+    return df
+
+
 def load_labeled_dataset(
     data_dir: Path,
     label_model: Optional[str] = None,
@@ -190,17 +209,14 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
     for key in parts[0].keys():
         values = [p[key] for p in parts if key in p]
         if all(isinstance(v, torch.Tensor) for v in values):
-            if all(v.shape == values[0].shape for v in values):
-                combined[key] = torch.cat(values, dim=0)
-            else:
-                max_sizes = [max(v.shape[d] for v in values) for d in range(values[0].dim())]
-                padded = []
-                for t in values:
-                    pad_cfg = []
-                    for d in range(t.dim() - 1, 0, -1):
-                        pad_cfg += [0, max_sizes[d] - t.shape[d]]
-                    padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
-                combined[key] = torch.cat(padded, dim=0)
+            max_sizes = [max(v.shape[d] for v in values) for d in range(values[0].dim())]
+            padded = []
+            for t in values:
+                pad_cfg = []
+                for d in range(t.dim() - 1, 0, -1):
+                    pad_cfg += [0, max_sizes[d] - t.shape[d]]
+                padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
+            combined[key] = torch.cat(padded, dim=0)
         else:
             merged: List = []
             for v in values:
@@ -272,14 +288,20 @@ def load_multi_year_data(
             outputs = load_model_outputs(data_dir)
 
             if set(dataset_years) != set(years):
+                df = _ensure_year_month_columns(df)
                 if "year" not in df.columns:
                     raise ValueError(
                         f"Dataset {data_dir.parent} spans years {dataset_years}, but "
-                        "the labeled parquet has no 'year' column to filter. "
-                        "Re-generate per-year data or provide a dataset that "
-                        "matches the requested years."
+                        "the labeled parquet has no 'year' or 'question_date' column "
+                        "to filter. Re-generate per-year data or provide a dataset "
+                        "that matches the requested years."
                     )
                 df = df[df["year"].isin(years)].copy()
+                if month is not None:
+                    if "month" not in df.columns:
+                        df = _ensure_year_month_columns(df)
+                    if "month" in df.columns:
+                        df = df[df["month"].eq(month)].copy()
                 outputs = _filter_outputs_by_question_ids(
                     outputs, df["question_id"].astype(str).tolist()
                 )
