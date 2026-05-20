@@ -83,7 +83,7 @@ def _filter_outputs_by_question_ids(
         raise KeyError("outputs must contain 'question_id' for filtering.")
 
     allowed = {str(qid) for qid in question_ids}
-    output_qids = [str(qid) for qid in outputs["question_id"]]
+    output_qids = _normalize_question_ids(outputs["question_id"])
     keep_indices = [idx for idx, qid in enumerate(output_qids) if qid in allowed]
 
     if len(keep_indices) == len(output_qids):
@@ -99,6 +99,17 @@ def _filter_outputs_by_question_ids(
         else:
             filtered[key] = value
     return filtered
+
+
+def _normalize_question_ids(question_ids: List) -> List[str]:
+    """Flatten and normalize question IDs to a list of strings."""
+    flattened: List[str] = []
+    for item in question_ids:
+        if isinstance(item, list):
+            flattened.extend(str(qid) for qid in item)
+        else:
+            flattened.append(str(item))
+    return flattened
 
 
 def _ensure_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -188,6 +199,8 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
         if not files:
             continue
         part = read_and_collate_outputs(files, tokenizer=None, get_keys=None)
+        if "question_id" in part:
+            part["question_id"] = _normalize_question_ids(part["question_id"])
         # Determine entry count from question_id list or first tensor.
         n = len(part.get("question_id", []))
         if n == 0:
@@ -222,6 +235,8 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
             for v in values:
                 merged.extend(v)
             combined[key] = merged
+        if key == "question_id":
+            combined[key] = _normalize_question_ids(combined[key])
     return combined
 
 
