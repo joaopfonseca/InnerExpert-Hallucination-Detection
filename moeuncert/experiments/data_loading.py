@@ -82,8 +82,11 @@ def _filter_outputs_by_question_ids(
     if "question_id" not in outputs:
         raise KeyError("outputs must contain 'question_id' for filtering.")
 
-    allowed = {str(qid) for qid in question_ids}
-    output_qids = _normalize_question_ids(outputs["question_id"])
+    allowed = {_normalize_question_id_value(qid) for qid in question_ids}
+    output_qids = [
+        _normalize_question_id_value(q)
+        for q in _normalize_question_ids(outputs["question_id"])
+    ]
     keep_indices = [idx for idx, qid in enumerate(output_qids) if qid in allowed]
 
     if len(keep_indices) == len(output_qids):
@@ -101,14 +104,37 @@ def _filter_outputs_by_question_ids(
     return filtered
 
 
+def _normalize_question_id_value(value) -> str:
+    """Normalize a single question ID to a stable string form."""
+    if isinstance(value, (np.integer, int)):
+        return str(int(value))
+    if isinstance(value, (np.floating, float)):
+        if np.isfinite(value) and float(value).is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.endswith(".0"):
+            candidate = stripped[:-2]
+            if candidate.isdigit():
+                return candidate
+        # Handle tensor repr strings, e.g. "tensor(2025031414)"
+        if stripped.startswith("tensor(") and stripped.endswith(")"):
+            inner = stripped[len("tensor("):-1].split(",")[0].strip()
+            if inner.isdigit():
+                return inner
+        return stripped
+    return str(value)
+
+
 def _normalize_question_ids(question_ids: List) -> List[str]:
     """Flatten and normalize question IDs to a list of strings."""
     flattened: List[str] = []
     for item in question_ids:
         if isinstance(item, list):
-            flattened.extend(str(qid) for qid in item)
+            flattened.extend(_normalize_question_id_value(qid) for qid in item)
         else:
-            flattened.append(str(item))
+            flattened.append(_normalize_question_id_value(item))
     return flattened
 
 
@@ -129,6 +155,39 @@ def _ensure_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "month" not in df.columns:
         df["month"] = dates.dt.month
     return df
+
+
+def _align_df_with_outputs(
+    df: pd.DataFrame,
+    outputs: Dict[str, torch.Tensor],
+) -> Tuple[pd.DataFrame, Dict[str, torch.Tensor]]:
+    """Align labeled dataframe with available model outputs by question_id."""
+    if "question_id" not in outputs or "question_id" not in df.columns:
+        return df, outputs
+
+    if df.empty:
+        raise ValueError("No labeled rows to align.")
+
+    output_qids = {
+        _normalize_question_id_value(q)
+        for q in _normalize_question_ids(outputs["question_id"])
+    }
+    df = df.copy()
+    df["question_id"] = df["question_id"].map(_normalize_question_id_value)
+    df_qids = df["question_id"]
+    missing_mask = ~df_qids.isin(output_qids)
+    missing_count = int(missing_mask.sum())
+    if missing_count:
+        print(
+            f"  WARNING: Dropping {missing_count} labeled rows without model outputs"
+        )
+        df = df.loc[~missing_mask].copy()
+
+    if df.empty:
+        raise ValueError("No labeled rows remain after aligning with model outputs.")
+
+    outputs = _filter_outputs_by_question_ids(outputs, df["question_id"].tolist())
+    return df, outputs
 
 
 def load_labeled_dataset(
@@ -186,7 +245,7 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
         Collated outputs from all batches, including an ``evidence_present``
         list field.
     """
-    from .utils import read_and_collate_outputs
+    from moeuncert.experiments.utils import read_and_collate_outputs
 
     base_dir = data_dir / "base_generation"
     evidence_dir = data_dir / "evidence_generation"
@@ -311,22 +370,21 @@ def load_multi_year_data(
                         "to filter. Re-generate per-year data or provide a dataset "
                         "that matches the requested years."
                     )
-                df = df[df["year"].isin(years)].copy()
+                df = df[df["question_id"].apply(lambda x: str(x)[:4]).astype(int).isin(years)].copy()
                 if month is not None:
                     if "month" not in df.columns:
                         df = _ensure_year_month_columns(df)
                     if "month" in df.columns:
                         df = df[df["month"].eq(month)].copy()
-                outputs = _filter_outputs_by_question_ids(
-                    outputs, df["question_id"].astype(str).tolist()
-                )
+                df, outputs = _align_df_with_outputs(df, outputs)
             elif "year" not in df.columns and len(years) == 1:
                 df["year"] = years[0]
 
             if df.empty:
                 raise ValueError(f"No data found for years {years}")
 
-            return df.reset_index(drop=True), outputs
+            df = df.reset_index(drop=True)
+            return df, outputs
 
         raise ValueError(f"No data found for years {years}")
 
@@ -375,6 +433,7 @@ def load_multi_year_data(
                 f"tensor batch size ({n_tensor})"
             )
 
+    df_combined, combined_outputs = _align_df_with_outputs(df_combined, combined_outputs)
     return df_combined, combined_outputs
 
 
