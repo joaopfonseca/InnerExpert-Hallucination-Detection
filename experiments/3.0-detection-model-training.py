@@ -147,6 +147,8 @@ def _extract_token_features(
             token_features[key] = tensor[tensor_idx, gen_start:gen_end]
         elif key in ['input_ids', 'scores_entropy']:
             continue
+        elif not isinstance(tensor, torch.Tensor):
+            continue
         elif key == 'attention_scores':
             attn = tensor[tensor_idx, :, :, hidden_start:hidden_end]
             attn = attn.permute(2, 0, 1)
