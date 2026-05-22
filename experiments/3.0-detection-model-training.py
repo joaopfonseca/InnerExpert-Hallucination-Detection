@@ -496,7 +496,7 @@ if __name__ == "__main__":
             },
         },
         "RandomForest": {
-            "model": RandomForestClassifier(random_state=args.seed, n_jobs=-1),
+            "model": RandomForestClassifier(random_state=args.seed),
             "param_grid": {
                 "clf__n_estimators": [100, 300],
                 "clf__max_depth": [10, 20, None],
