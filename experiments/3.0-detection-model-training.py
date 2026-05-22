@@ -69,6 +69,11 @@ from moeuncert.experiments import (
 )
 
 
+def _replace_inf_with_nan(X):
+    """Replace non-finite values with NaN. Pickle-safe replacement for a lambda."""
+    return np.where(np.isfinite(X), X, np.nan)
+
+
 def build_feature_pipeline(
     feature_names: List[str],
     scale_features: List[str],
@@ -110,7 +115,7 @@ def build_feature_pipeline(
         ("pass", "passthrough", pass_indices),
     ])
 
-    _clean_inf = FunctionTransformer(lambda X: np.where(np.isfinite(X), X, np.nan))
+    _clean_inf = FunctionTransformer(_replace_inf_with_nan)
     _imputer = SimpleImputer(strategy="median")
 
     pipeline = Pipeline([
@@ -496,7 +501,7 @@ if __name__ == "__main__":
             },
         },
         "RandomForest": {
-            "model": RandomForestClassifier(random_state=args.seed),
+            "model": RandomForestClassifier(random_state=args.seed, n_jobs=1),
             "param_grid": {
                 "clf__n_estimators": [100, 300],
                 "clf__max_depth": [10, 20, None],
@@ -506,7 +511,7 @@ if __name__ == "__main__":
         "XGBoost": {
             "model": XGBClassifier(
                 random_state=args.seed,
-                n_jobs=-1,
+                n_jobs=1,
                 eval_metric="logloss",
                 verbosity=0,
             ),
@@ -551,7 +556,7 @@ if __name__ == "__main__":
             param_grid,
             cv=group_kfold.split(X_train, y_train, groups=qids_train),
             scoring="f1",
-            n_jobs=-1,
+            n_jobs=32,
             verbose=0,
         )
         search.fit(X_train, y_train)
