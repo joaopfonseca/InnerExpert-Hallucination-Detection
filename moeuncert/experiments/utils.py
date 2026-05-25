@@ -132,7 +132,11 @@ def read_and_collate_outputs(
             all_outputs[key] = value
             continue
         if all(v.shape == value[0].shape for v in value):
-            all_outputs[key] = torch.concat(value, dim=0)
+            if value[0].dim() == 0:
+                # scalar tensors must be stacked, not concatenated
+                all_outputs[key] = torch.stack(value)
+            else:
+                all_outputs[key] = torch.concat(value, dim=0)
         else:
             # Pad to max size in each dimension before concatenating (e.g. variable
             # generation lengths across batches when early stopping occurs)

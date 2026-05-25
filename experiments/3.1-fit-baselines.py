@@ -84,9 +84,9 @@ def aggregate_token_to_answer(
     for qid in unique_qids:
         mask = question_ids == qid
         if aggregation == "mean":
-            aggregated.append(token_scores[mask].mean())
+            aggregated.append(np.nanmean(token_scores[mask]))
         elif aggregation == "max":
-            aggregated.append(token_scores[mask].max())
+            aggregated.append(np.nanmax(token_scores[mask]))
         else:
             raise ValueError(f"Unknown aggregation: {aggregation}")
     return unique_qids, np.array(aggregated)
@@ -203,7 +203,8 @@ def fit_llm_check(
         best_auroc = 0.0
         
         for layer in range(n_layers):
-            layer_scores = scores[:, layer, :].numpy().flatten()
+            layer_scores = scores[:, layer, :].float().numpy()
+            layer_scores = np.where(np.isfinite(layer_scores), layer_scores, np.nan).flatten()
             layer_qids = np.repeat(qids, scores.shape[2])
 
             unique_qids, agg_scores = aggregate_token_to_answer(
@@ -213,8 +214,13 @@ def fit_llm_check(
             layer_matched_labels = np.array([qid_to_label[qid] for qid in unique_qids[mask]])
             layer_agg_scores = agg_scores[mask]
 
+            # Drop any NaN aggregates (all tokens were masked as -inf)
+            nan_mask = ~np.isnan(layer_agg_scores)
+            layer_matched_labels = layer_matched_labels[nan_mask]
+            layer_agg_scores = layer_agg_scores[nan_mask]
+
             # Compute AUROC for this layer
-            if len(np.unique(layer_matched_labels)) > 1:
+            if len(layer_matched_labels) > 1 and len(np.unique(layer_matched_labels)) > 1:
                 auroc = roc_auc_score(layer_matched_labels, layer_agg_scores)
                 if auroc > best_auroc:
                     best_auroc = auroc
@@ -223,7 +229,8 @@ def fit_llm_check(
         print(f"  Best layer: {best_layer} (AUROC: {best_auroc:.4f})")
 
         # Re-compute scores for best layer and fit threshold.
-        best_layer_scores = scores[:, best_layer, :].numpy().flatten()
+        best_layer_scores = scores[:, best_layer, :].float().numpy()
+        best_layer_scores = np.where(np.isfinite(best_layer_scores), best_layer_scores, np.nan).flatten()
         best_layer_qids = np.repeat(qids, scores.shape[2])
         unique_qids, agg_scores = aggregate_token_to_answer(
             best_layer_scores, best_layer_qids, aggregation=aggregation
@@ -233,9 +240,14 @@ def fit_llm_check(
         agg_scores = agg_scores[mask]
         matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
 
+        # Drop any NaN aggregates before evaluating
+        nan_mask = ~np.isnan(agg_scores)
+        matched_labels = matched_labels[nan_mask]
+        agg_scores = agg_scores[nan_mask]
+
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
 
-        if len(np.unique(matched_labels)) > 1:
+        if len(matched_labels) > 1 and len(np.unique(matched_labels)) > 1:
             layer_auroc = roc_auc_score(matched_labels, agg_scores)
         else:
             layer_auroc = 0.5
