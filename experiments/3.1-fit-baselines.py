@@ -109,7 +109,7 @@ def fit_predictive_entropy(
     # vs RAG rows that share the same question_id.
     raw_qids = np.asarray(outputs['question_id'])
     ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
-    qids = np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev_flags)])
+    qids = np.array([f"{q}::{int(e)}" for q, e in zip(raw_qids, ev_flags)])
 
     # Aggregate to answer-level
     unique_qids, agg_scores = aggregate_token_to_answer(
@@ -127,7 +127,7 @@ def fit_predictive_entropy(
     )
     if ev_col is not None:
         label_keys = np.array(
-            [f"{q}::{e}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+            [f"{q}::{int(e)}" for q, e in zip(label_qids, labels_df[ev_col].values)]
         )
     else:
         label_keys = label_qids
@@ -167,7 +167,7 @@ def fit_llm_check(
     # Build composite qids to disambiguate base vs RAG rows.
     raw_qids = np.asarray(outputs['question_id'])
     ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
-    qids = np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev_flags)])
+    qids = np.array([f"{q}::{int(e)}" for q, e in zip(raw_qids, ev_flags)])
 
     # Build label lookup with matching composite keys.
     label_qids, labels = extract_answer_level_labels(labels_df)
@@ -178,7 +178,7 @@ def fit_llm_check(
     )
     if ev_col is not None:
         label_keys = np.array(
-            [f"{q}::{e}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+            [f"{q}::{int(e)}" for q, e in zip(label_qids, labels_df[ev_col].values)]
         )
     else:
         label_keys = label_qids
