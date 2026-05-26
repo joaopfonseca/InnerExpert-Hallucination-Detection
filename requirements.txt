@@ -6,6 +6,8 @@ datasets>=4.5.0
 openai>=2.32.0
 bitsandbytes>=0.49.2
 tiktoken>=0.7.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
 
 # Evaluation metrics
 evaluate>=0.4.6
