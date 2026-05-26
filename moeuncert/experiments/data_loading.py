@@ -56,7 +56,9 @@ def _find_combined_dataset_dir(
             continue
         candidate_years, candidate_month = parsed
         if month is not None:
-            if candidate_month != month or candidate_years != years:
+            exact_match = candidate_month == month and set(years).issubset(set(candidate_years))
+            fallback_match = candidate_month is None and set(years).issubset(set(candidate_years))
+            if not (exact_match or fallback_match):
                 continue
         else:
             if candidate_month is not None:
@@ -305,7 +307,7 @@ def load_multi_year_data(
     month: Optional[int],
     model: str,
     label_model: Optional[str] = None,
-) -> Tuple[pd.DataFrame, Dict[str, torch.Tensor]]:
+) -> Tuple[pd.DataFrame, Dict[str, torch.Tensor], Path]:
     """Load labeled data and model outputs across multiple years.
 
     Parameters
@@ -323,8 +325,9 @@ def load_multi_year_data(
 
     Returns
     -------
-    Tuple[pd.DataFrame, Dict[str, torch.Tensor]]
-        Concatenated labeled dataframe and collated model outputs.
+    Tuple[pd.DataFrame, Dict[str, torch.Tensor], Path]
+        Concatenated labeled dataframe, collated model outputs, and the
+        source directory where the data was actually loaded from.
     """
     model_slug = resolve_model_slug(model)
     all_dfs = []
@@ -384,7 +387,7 @@ def load_multi_year_data(
                 raise ValueError(f"No data found for years {years}")
 
             df = df.reset_index(drop=True)
-            return df, outputs
+            return df, outputs, data_dir
 
         raise ValueError(f"No data found for years {years}")
 
@@ -434,7 +437,9 @@ def load_multi_year_data(
             )
 
     df_combined, combined_outputs = _align_df_with_outputs(df_combined, combined_outputs)
-    return df_combined, combined_outputs
+    # Use the first year's directory as the canonical source dir
+    first_year_data_dir = data_root / resolve_dataset_slug([years[0]], month)[2] / model_slug
+    return df_combined, combined_outputs, first_year_data_dir
 
 
 def load_sampled_outputs(
