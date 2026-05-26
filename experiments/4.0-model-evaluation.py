@@ -758,31 +758,27 @@ def main():
 
     args = parser.parse_args()
 
-    model_slug = resolve_model_slug(args.model)
-    _, _, dataset_slug = resolve_dataset_slug(args.test_years, args.test_month)
-    data_dir = args.data_root / dataset_slug / model_slug
-    predictions_dir = data_dir / "predictions"
-    predictions_dir.mkdir(parents=True, exist_ok=True)
-
     print(f"{'=' * 70}")
     print("4.0 — MODEL EVALUATION (OOD INFERENCE)")
     print(f"{'=' * 70}")
-    print(f"Model: {args.model}")
-    print(f"Test dataset: {dataset_slug}")
-    print(f"Data dir: {data_dir}")
 
-    # -----------------------------------------------------------------------
-    # Load test data
-    # -----------------------------------------------------------------------
+    # Load data first; determine the actual source directory afterwards.
     print("\nLoading test data...")
-    df_labeled, outputs = load_multi_year_data(
+    df_labeled, outputs, source_dir = load_multi_year_data(
         args.data_root, args.test_years, args.test_month,
         args.model, args.label_model,
     )
     print(f"  {len(df_labeled)} labeled rows")
+    print(f"  Source data dir: {source_dir}")
 
-    comp_qids = _build_composite_qids(outputs)
-    label_lookup = _build_label_lookup(df_labeled)
+    # Create predictions dir inside the actual data source, never in a phantom path.
+    predictions_dir = source_dir / "predictions"
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Model: {args.model}")
+    print(f"Test dataset: {args.test_years}")
+    if args.test_month:
+        print(f"Test month: {args.test_month:02d}")
 
     # -----------------------------------------------------------------------
     # PredictiveEntropy
