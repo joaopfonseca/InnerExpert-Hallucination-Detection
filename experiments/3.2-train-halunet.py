@@ -277,7 +277,7 @@ def main():
 
     # If the dataset includes an evidence-mode flag, include it in the grouping
     # key so variants of the same question/evidence setting are kept together.
-    for evidence_col in ("has_evidence", "with_evidence", "use_evidence", "rag", "use_rag"):
+    for evidence_col in ("evidence_present", "has_evidence", "with_evidence", "use_evidence", "rag", "use_rag"):
         if evidence_col in df_labeled.columns:
             answer_qids = answer_qids + "::" + df_labeled[evidence_col].astype(str)
             break
