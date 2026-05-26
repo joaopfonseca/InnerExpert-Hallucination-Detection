@@ -379,7 +379,6 @@ def load_multi_year_data(
                         df = _ensure_year_month_columns(df)
                     if "month" in df.columns:
                         df = df[df["month"].eq(month)].copy()
-                df, outputs = _align_df_with_outputs(df, outputs)
             elif "year" not in df.columns and len(years) == 1:
                 df["year"] = years[0]
 
@@ -387,6 +386,7 @@ def load_multi_year_data(
                 raise ValueError(f"No data found for years {years}")
 
             df = df.reset_index(drop=True)
+            df, outputs = _align_df_with_outputs(df, outputs)
             return df, outputs, data_dir
 
         raise ValueError(f"No data found for years {years}")
