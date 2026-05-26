@@ -425,7 +425,7 @@ if __name__ == "__main__":
     # Load multi-year data
     # =========================================================================
 
-    df_labeled, all_outputs = load_multi_year_data(
+    df_labeled, all_outputs, _ = load_multi_year_data(
         args.data_root,
         args.train_years,
         args.month,

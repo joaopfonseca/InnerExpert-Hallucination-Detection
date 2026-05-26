@@ -590,7 +590,7 @@ def main():
     print(f"Aggregations: {args.aggregations}")
     
     # Load training data
-    df_labeled, outputs = load_multi_year_data(
+    df_labeled, outputs, _ = load_multi_year_data(
         args.data_root,
         args.train_years,
         args.month,
