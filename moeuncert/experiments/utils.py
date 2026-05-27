@@ -8,6 +8,11 @@ from sklearn.metrics import roc_curve, roc_auc_score, average_precision_score, f
 logger = logging.getLogger(__name__)
 
 
+def replace_inf_with_nan(X):
+    """Replace non-finite values with NaN. Pickle-safe replacement for a lambda."""
+    return np.where(np.isfinite(X), X, np.nan)
+
+
 def find_generation_boundaries(
     input_ids: torch.Tensor,
     sequences: torch.Tensor,

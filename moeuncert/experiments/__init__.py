@@ -16,6 +16,7 @@ from .utils import (
     compute_metrics_at_threshold,
     create_token_labels,
     find_generation_boundaries,
+    replace_inf_with_nan,
 )
 from .data_loading import (
     load_labeled_dataset,
@@ -41,4 +42,5 @@ __all__ = [
     "load_labeled_dataset",
     "load_model_outputs",
     "load_multi_year_data",
+    "replace_inf_with_nan",
 ]

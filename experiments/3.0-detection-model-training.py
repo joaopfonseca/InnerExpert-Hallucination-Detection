@@ -66,12 +66,8 @@ from moeuncert.experiments import (
     compute_metrics_at_threshold,
     create_token_labels,
     find_generation_boundaries,
+    replace_inf_with_nan,
 )
-
-
-def _replace_inf_with_nan(X):
-    """Replace non-finite values with NaN. Pickle-safe replacement for a lambda."""
-    return np.where(np.isfinite(X), X, np.nan)
 
 
 def build_feature_pipeline(
@@ -115,7 +111,7 @@ def build_feature_pipeline(
         ("pass", "passthrough", pass_indices),
     ])
 
-    _clean_inf = FunctionTransformer(_replace_inf_with_nan)
+    _clean_inf = FunctionTransformer(replace_inf_with_nan)
     _imputer = SimpleImputer(strategy="median")
 
     pipeline = Pipeline([
