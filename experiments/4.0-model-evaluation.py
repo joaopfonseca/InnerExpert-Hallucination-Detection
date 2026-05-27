@@ -500,7 +500,6 @@ def evaluate_detector(
         detector_data = pickle.load(f)
     model = detector_data["model"]
     feature_names = detector_data["feature_names"]
-    scale_features = detector_data.get("scale_features", [])
 
     # Build qid → index map
     all_qids = outputs["question_id"]
@@ -761,6 +760,8 @@ def main():
     print(f"{'=' * 70}")
     print("4.0 — MODEL EVALUATION (OOD INFERENCE)")
     print(f"{'=' * 70}")
+
+    model_slug = resolve_model_slug(args.model)
 
     # Load data first; determine the actual source directory afterwards.
     print("\nLoading test data...")
