@@ -587,9 +587,11 @@ def evaluate_detector(
                 t = tensor[gen_start - 1 : gen_end - 1]  # (gen_len, n_layers, n_experts)
                 token_feats[key] = t.reshape(gen_len, -1)
             elif key == "expert_similarities":
-                # (seq_len,) — scalar per position
-                t = tensor[gen_start - 1 : gen_end - 1]  # (gen_len,)
-                token_feats[key] = t.reshape(gen_len, 1)
+                # (seq_len, n_layers) or (seq_len,) — slice along seq_len like hidden_scores
+                t = tensor[gen_start - 1 : gen_end - 1]
+                if t.ndim == 1:
+                    t = t.reshape(gen_len, 1)
+                token_feats[key] = t
             elif key == "expert_hidden_scores":
                 # (seq_len, n_layers) or (seq_len,)
                 t = tensor[gen_start - 1 : gen_end - 1]
