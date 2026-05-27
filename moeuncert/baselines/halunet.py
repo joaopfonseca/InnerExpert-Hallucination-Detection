@@ -417,5 +417,11 @@ class HaluNet(BaseBaseline):
     def load(self, path):
         """Load model checkpoint."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        # Reconstruct model with the exact architecture used during training.
+        # The checkpoint always stores config (since PR fix in save()).
+        config = checkpoint.get('config')
+        if config is not None:
+            self.model = HaluNetModel(**config).to(self.device)
+        # If config is missing (very old checkpoints), fall back to current self.model.
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.threshold = checkpoint['threshold']
