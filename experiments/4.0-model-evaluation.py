@@ -771,6 +771,9 @@ def main():
     print(f"  {len(df_labeled)} labeled rows")
     print(f"  Source data dir: {source_dir}")
 
+    comp_qids = _build_composite_qids(outputs)
+    label_lookup = _build_label_lookup(df_labeled)
+
     # Create predictions dir inside the actual data source, never in a phantom path.
     predictions_dir = source_dir / "predictions"
     predictions_dir.mkdir(parents=True, exist_ok=True)
