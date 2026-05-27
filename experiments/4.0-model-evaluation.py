@@ -60,6 +60,11 @@ from moeuncert.experiments import (
 # Short alias for convenience within this script
 _find_gen_boundaries = find_generation_boundaries
 
+# Backward-compat alias for pickles trained before _replace_inf_with_nan
+# moved to moeuncert.experiments.utils.
+from moeuncert.experiments import replace_inf_with_nan
+_replace_inf_with_nan = replace_inf_with_nan
+
 
 # ---------------------------------------------------------------------------
 # Helpers
