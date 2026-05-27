@@ -40,6 +40,16 @@ def _parse_dataset_dir_name(name: str) -> Optional[Tuple[List[int], Optional[int
     return years, month
 
 
+def _has_data_files(model_dir: Path) -> bool:
+    """Check that a model data directory actually contains source data files."""
+    return (
+        any(model_dir.glob("results_labeled*.parquet"))
+        or (model_dir / "results.parquet").exists()
+        or any(model_dir.glob("base_generation/*.pt"))
+        or any(model_dir.glob("evidence_generation/*.pt"))
+    )
+
+
 def _find_combined_dataset_dir(
     data_root: Path,
     model_slug: str,
@@ -66,7 +76,7 @@ def _find_combined_dataset_dir(
             if not set(years).issubset(set(candidate_years)):
                 continue
         model_dir = dataset_dir / model_slug
-        if model_dir.exists():
+        if model_dir.exists() and _has_data_files(model_dir):
             candidates.append((model_dir, candidate_years))
 
     if not candidates:
@@ -141,9 +151,26 @@ def _normalize_question_ids(question_ids: List) -> List[str]:
 
 
 def _ensure_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure year/month columns exist using question_date when available."""
+    """Ensure year/month columns exist using question_id as primary source.
+
+    Falls back to question_date parsing only if question_id is unavailable.
+    Using question_id avoids silent NaT failures from mixed date formats in
+    Arrow-backed StringDtype columns (e.g. '2025/01/01' vs '2025-01-01').
+    """
     if "year" in df.columns and "month" in df.columns:
         return df
+
+    # Primary: derive from question_id (format is reliably YYYYMMDD)
+    if "question_id" in df.columns:
+        qid_str = df["question_id"].astype(str).str.replace(r"\D", "", regex=True)
+        df = df.copy()
+        if "year" not in df.columns:
+            df["year"] = qid_str.str[:4].astype(int)
+        if "month" not in df.columns:
+            df["month"] = qid_str.str[4:6].astype(int)
+        return df
+
+    # Fallback: question_date parsing
     if "question_date" not in df.columns:
         return df
 
