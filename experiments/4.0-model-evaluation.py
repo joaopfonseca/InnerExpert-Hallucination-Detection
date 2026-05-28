@@ -86,7 +86,7 @@ def _build_composite_qids(outputs: Dict) -> np.ndarray:
                 f"evidence_present has {len(ev)}"
             )
 
-    return np.array([f"{q}::{e}" for q, e in zip(raw_qids, ev)])
+    return np.array([f"{q}::{int(e)}" for q, e in zip(raw_qids, ev)])
 
 
 def _build_label_lookup(df_labeled: pd.DataFrame) -> Dict[str, int]:
@@ -108,7 +108,7 @@ def _build_label_lookup(df_labeled: pd.DataFrame) -> Dict[str, int]:
         None,
     )
     if ev_col is not None:
-        keys = np.array([f"{q}::{e}" for q, e in zip(qids, df_labeled[ev_col].values)])
+        keys = np.array([f"{q}::{int(e)}" for q, e in zip(qids, df_labeled[ev_col].values)])
     else:
         keys = qids
     return dict(zip(keys, labels))
@@ -486,7 +486,7 @@ def evaluate_halunet(
 
         # Use composite key
         ev_flag = bool(outputs.get("evidence_present", [False] * len(all_qids))[idx])
-        comp_qid = f"{qid}::{ev_flag}"
+        comp_qid = f"{qid}::{int(ev_flag)}"
         rows.append({"question_id": comp_qid, "score": float(score)})
 
     return pd.DataFrame(rows)
@@ -634,7 +634,7 @@ def evaluate_detector(
 
         y_proba = model.predict_proba(X_tokens)[:, 1]
 
-        comp_qid = f"{qid}::{evidence_present}"
+        comp_qid = f"{qid}::{int(evidence_present)}"
         for pos in range(gen_len):
             all_comp_qids.append(comp_qid)
             all_positions.append(pos)
@@ -673,7 +673,7 @@ def build_ground_truth(
         indices = qid_to_indices[qid]
         evidence_present = bool(row.get("evidence_present", False))
         idx = indices[1] if evidence_present and len(indices) > 1 else indices[0]
-        comp_qid = f"{qid}::{evidence_present}"
+        comp_qid = f"{qid}::{int(evidence_present)}"
 
         answer_label = label_lookup.get(comp_qid, 0)
 

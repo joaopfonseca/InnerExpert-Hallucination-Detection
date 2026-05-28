@@ -516,6 +516,7 @@ def load_sampled_outputs(
     found_any = False
 
     print(f"\nLoading sampled outputs for years: {years}")
+    combined = None
     for year in years:
         _, _, dataset_slug = resolve_dataset_slug([year], month)
         sampled_dir = data_root / dataset_slug / model_slug / "sampled_generation"
@@ -541,7 +542,13 @@ def load_sampled_outputs(
 
         # For each question, collect sampled responses and log probs
         for idx, qid in enumerate(qids):
-            qid = str(qid)
+            qid = _normalize_question_id_value(qid)
+
+            # Filter by requested years when loading from combined dataset
+            if combined is not None:
+                qid_year = int(qid[:4]) if len(qid) >= 4 and qid[:4].isdigit() else None
+                if qid_year is not None and qid_year not in years:
+                    continue
 
             # Collect responses from each sample
             responses = []
@@ -611,7 +618,13 @@ def load_sampled_outputs(
                     )
                     qids = outputs["question_id"]
                     for idx, qid in enumerate(qids):
-                        qid = str(qid)
+                        qid = _normalize_question_id_value(qid)
+
+                        # Filter by requested years when loading from combined dataset
+                        qid_year = int(qid[:4]) if len(qid) >= 4 and qid[:4].isdigit() else None
+                        if qid_year is not None and qid_year not in years:
+                            continue
+
                         responses = []
                         log_probs = []
                         logits = []
