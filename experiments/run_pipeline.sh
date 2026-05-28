@@ -169,6 +169,25 @@ run_script "4.0-model-evaluation.py" \
     --num-samples "${NUM_SAMPLES}"
 
 # ============================================================================
+# PHASE 5: RESULTS ANALYSIS
+# ============================================================================
+
+log ""
+log "============================================================"
+log "PHASE 5: RESULTS ANALYSIS"
+log "============================================================"
+log ""
+
+MODEL_SLUG="${MODEL//\//__}"
+
+run_script "5.0-results-analysis.py" \
+    --model "${MODEL}" \
+    --test-years "${TEST_YEARS[@]}" \
+    $( [ -n "${TEST_MONTH}" ] && echo "--test-month ${TEST_MONTH}" ) \
+    --thresholds-file "models/${MODEL_SLUG}/thresholds.json" \
+    --plot-dpi 300
+
+# ============================================================================
 # DONE
 # ============================================================================
 
@@ -183,5 +202,4 @@ log "  Sampled responses:    data/realtimeqa-YYYY(-MM)/<model_slug>/sampled_gene
 log "  Labels:               data/realtimeqa-YYYY(-MM)/<model_slug>/results_labeled_*.parquet"
 log "  Trained models:       models/<model_slug>/detector.pkl, halunet.pt, thresholds.json"
 log "  Predictions:          data/realtimeqa-YYYY(-MM)/<model_slug>/predictions/"
-log ""
-log "Next step: python experiments/5.0-results-analysis.py"
+log "  Analysis:             data/realtimeqa-YYYY(-MM)/<model_slug>/analysis/"

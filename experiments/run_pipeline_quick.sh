@@ -136,6 +136,22 @@ run_script "4.0-model-evaluation.py" \
     --label-model "${LABEL_MODEL}" \
     --num-samples "${NUM_SAMPLES}"
 
+# ============================================================================
+# PHASE 5: RESULTS ANALYSIS
+# ============================================================================
+
+log "=== PHASE 5: Results analysis ==="
+
+MODEL_SLUG="${MODEL//\//__}"
+
+run_script "5.0-results-analysis.py" \
+    --model "${MODEL}" \
+    --test-years "${TEST_YEARS[@]}" \
+    $( [ -n "${TEST_MONTH}" ] && echo "--test-month ${TEST_MONTH}" ) \
+    --thresholds-file "models/${MODEL_SLUG}/thresholds.json" \
+    --plot-dpi 300
+
 log ""
 log "=== PIPELINE COMPLETE ==="
-log "Predictions in: data/realtimeqa-2026-01/<model_slug>/predictions/"
+log "Predictions in: data/realtimeqa-YYYY(-MM)/<model_slug>/predictions/"
+log "Analysis in:  data/realtimeqa-YYYY(-MM)/<model_slug>/analysis/"
