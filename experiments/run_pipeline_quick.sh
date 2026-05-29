@@ -22,7 +22,8 @@ TRAIN_MONTH=""                  # Empty = all months
 
 # --- TEST (single month) ---
 TEST_YEARS=(2026)
-TEST_MONTH=1                    # January 2026
+TEST_MONTH=""                    # all months
+# TEST_MONTH=1                    # January 2026
 
 # --- MODEL CONFIGURATION ---
 MODEL="allenai/OLMoE-1B-7B-0924-Instruct"
