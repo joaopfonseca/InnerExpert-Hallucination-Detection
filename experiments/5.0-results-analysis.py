@@ -4,8 +4,8 @@
 Reads all *.parquet files under ``--predictions-dir``, aligns them with
 ``ground_truth.parquet``, and computes:
 
-* Answer-level: AUROC, AUPRC, F1, Accuracy, TPR@5%FPR, ECE
-* Token-level : AUROC, AUPRC, F1, Accuracy, TPR@5%FPR, ECE
+* Answer-level: AUROC, AUPRC, F1, Accuracy, TPR@1/5/10%FPR, ECE
+* Token-level : AUROC, AUPRC, F1, Accuracy, TPR@1/5/10%FPR, ECE
 
 Produces:
   * comparison_table.md — Markdown tables (answer + token level)
@@ -19,7 +19,7 @@ Usage
         --predictions-dir data/realtimeqa-2025-2026/allenai__OLMoE-1B-7B-0924-Instruct/predictions/predictions \\
         [--thresholds-file models/allenai__OLMoE-1B-7B-0924-Instruct/thresholds.json]
 
-If ``--thresholds-file`` is provided, F1 / Accuracy / TPR@5%FPR / ECE are
+If ``--thresholds-file`` is provided, F1 / Accuracy / TPR@X%FPR / ECE are
 computed at the tuned threshold for each baseline.  Threshold-independent
 metrics (AUROC, AUPRC) never change.  Missing or invalid thresholds fall
 back to 0.5.
@@ -87,14 +87,16 @@ def _compute_metrics(
     y_proba: np.ndarray,
     threshold: float = 0.5,
 ) -> Dict[str, float]:
-    """Compute AUROC / AUPRC / F1 / Accuracy / TPR@5%FPR / ECE."""
+    """Compute AUROC / AUPRC / F1 / Accuracy / TPR@1/5/10%FPR / ECE."""
     if len(y_true) == 0 or len(np.unique(y_true)) < 2:
         return {
             "auroc": 0.5,
             "auprc": 0.0,
             "f1": 0.0,
             "accuracy": 0.0,
+            "tpr_at_1fpr": 0.0,
             "tpr_at_5fpr": 0.0,
+            "tpr_at_10fpr": 0.0,
             "ece": 0.0,
             "threshold": float(threshold),
             "n": int(len(y_true)),
@@ -106,7 +108,9 @@ def _compute_metrics(
     f1    = f1_score(y_true, y_pred, zero_division=0)
     acc   = accuracy_score(y_true, y_pred)
     fpr, tpr, _ = roc_curve(y_true, y_proba)
-    tpr_at_5 = float(np.interp(0.05, fpr, tpr))
+    tpr_at_1  = float(np.interp(0.01, fpr, tpr))
+    tpr_at_5  = float(np.interp(0.05, fpr, tpr))
+    tpr_at_10 = float(np.interp(0.10, fpr, tpr))
     ece = compute_ece(y_true, y_proba)
 
     return {
@@ -114,7 +118,9 @@ def _compute_metrics(
         "auprc": float(auprc),
         "f1": float(f1),
         "accuracy": float(acc),
+        "tpr_at_1fpr": tpr_at_1,
         "tpr_at_5fpr": tpr_at_5,
+        "tpr_at_10fpr": tpr_at_10,
         "ece": ece,
         "threshold": float(threshold),
         "n": int(len(y_true)),
@@ -380,13 +386,15 @@ def analyse(
 
     def _make_table(results: Dict[str, MethodInfo]) -> str:
         rows = []
-        cols = ["auroc", "auprc", "f1", "accuracy", "tpr_at_5fpr", "ece"]
+        cols = ["auroc", "auprc", "f1", "accuracy", "tpr_at_1fpr", "tpr_at_5fpr", "tpr_at_10fpr", "ece"]
         display_names = {
             "auroc": "AUROC",
             "auprc": "AUPRC",
             "f1": "F1",
             "accuracy": "Accuracy",
+            "tpr_at_1fpr": "TPR@1%FPR",
             "tpr_at_5fpr": "TPR@5%FPR",
+            "tpr_at_10fpr": "TPR@10%FPR",
             "ece": "ECE",
         }
         for method, (_, metrics) in results.items():
@@ -408,7 +416,7 @@ def analyse(
         f"{answer_table}\n\n"
         f"## Token-Level Evaluation ({len(gt_token)} tokens)\n\n"
         f"{token_table}\n\n"
-        "*TPR@5%FPR = True Positive Rate at 5% False Positive Rate.  "
+        "*TPR@X%FPR = True Positive Rate at X% False Positive Rate.  "
         "ECE = Expected Calibration Error (10 bins).*\n"
     )
     (output_dir / "comparison_table.md").write_text(comparison_md)
@@ -613,9 +621,7 @@ def _resolve_predictions_dir(
 ) -> Path:
     """Replicate the path resolution used by 4.0-model-evaluation.py.
 
-    Returns the directory that actually contains the parquet files,
-    handling the extra 'predictions/predictions' nesting that some
-    pipeline runs create.
+    Returns the directory that actually contains the parquet files.
     """
     model_slug = resolve_model_slug(model)
     _, _, dataset_slug = resolve_dataset_slug(test_years, test_month)
@@ -625,9 +631,6 @@ def _resolve_predictions_dir(
     pred_dir = data_path / "predictions"
     if _has_predictions(pred_dir):
         return pred_dir
-    sub = pred_dir / "predictions"
-    if _has_predictions(sub):
-        return sub
 
     # --- Combined-dataset fallback -----------------------------------------
     # Scan data_root for any dataset that covers the requested years and
@@ -727,7 +730,7 @@ def main():
         type=Path,
         default=None,
         help="Optional path to thresholds.json (produced by 3.1-fit-baselines.py). "
-             "If provided, F1/Accuracy/TPR@5%FPR/ECE are computed at the tuned threshold "
+             "If provided, F1/Accuracy/TPR@X%FPR/ECE are computed at the tuned threshold "
              "for each baseline instead of 0.5.",
     )
     args = parser.parse_args()

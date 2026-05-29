@@ -1,0 +1,67 @@
+{
+  "predictive_entropy_mean": {
+    "threshold": 0.2650647461414337,
+    "aggregation": "mean",
+    "auroc": 0.8966897748525392
+  },
+  "predictive_entropy_max": {
+    "threshold": 2.0232596397399902,
+    "aggregation": "max",
+    "auroc": 0.8705761760897712
+  },
+  "llm_check_attention_mean": {
+    "threshold": -17482.7109375,
+    "layer": 0,
+    "aggregation": "mean",
+    "auroc": 0.7964984804344699,
+    "layer_auroc": 0.7964984804344699
+  },
+  "llm_check_attention_max": {
+    "threshold": -92.8125,
+    "layer": 11,
+    "aggregation": "max",
+    "auroc": 0.7544642857142857,
+    "layer_auroc": 0.7544642857142857
+  },
+  "llm_check_hidden_mean": {
+    "threshold": -1.6474541425704956,
+    "layer": 10,
+    "aggregation": "mean",
+    "auroc": 0.541630700618616,
+    "layer_auroc": 0.541630700618616
+  },
+  "llm_check_hidden_max": {
+    "threshold": 11.14645004272461,
+    "layer": 7,
+    "aggregation": "max",
+    "auroc": 0.7973481783196662,
+    "layer_auroc": 0.7973481783196662
+  },
+  "llm_check_perplexity": {
+    "threshold": 1.0880779027938843,
+    "aggregation": "max",
+    "auroc": 0.28902541001294774
+  },
+  "llm_check_entropy_mean": {
+    "threshold": 0.2650647461414337,
+    "aggregation": "mean"
+  },
+  "llm_check_entropy_max": {
+    "threshold": 2.0232596397399902,
+    "aggregation": "max"
+  },
+  "semantic_uncertainty": {
+    "threshold": null,
+    "note": "SE computation failed for all questions"
+  },
+  "semantic_energy": {
+    "threshold": null,
+    "note": "SE computation failed for all questions"
+  },
+  "selfcheck_nli": {
+    "note": "No threshold needed (pure inference)"
+  },
+  "selfcheck_prompt": {
+    "note": "No threshold needed (pure inference)"
+  }
+}
