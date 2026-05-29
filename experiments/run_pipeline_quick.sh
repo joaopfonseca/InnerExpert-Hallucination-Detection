@@ -132,7 +132,7 @@ log "=== PHASE 4: OOD evaluation (test: ${TEST_YEARS[*]}-$(printf '%02d' ${TEST_
 
 run_script "4.0-model-evaluation.py" \
     --test-years "${TEST_YEARS[@]}" \
-    --test-month "${TEST_MONTH}" \
+    $( [ -n "${TEST_MONTH}" ] && echo "--test-month ${TEST_MONTH}" ) \
     --model "${MODEL}" \
     --label-model "${LABEL_MODEL}" \
     --num-samples "${NUM_SAMPLES}"
