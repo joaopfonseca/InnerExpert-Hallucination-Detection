@@ -750,7 +750,13 @@ def main():
     # Resolve output directory
     output_dir = args.output_dir
     if output_dir is None:
-        output_dir = predictions_dir.parent.parent / "analysis"
+        # Place it next to the outer "predictions" folder so the layout is
+        #   <model_slug>/predictions/   (parquet files)
+        #   <model_slug>/analysis/      (results)
+        if predictions_dir.parent.name == "predictions":
+            output_dir = predictions_dir.parent.parent / "analysis"
+        else:
+            output_dir = predictions_dir.parent / "analysis"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output dir: {output_dir}")
 
