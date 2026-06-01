@@ -71,7 +71,7 @@ class TOHA(BaseBaseline):
 
     def __init__(self, mode="supervised", n_max=6,
                  select_method="f_classif",
-                 zero_out="prompt", normalize_by_length=True,
+                 zero_out="prompt", normalize_by_length=False,
                  handle_nan=True):
         self.mode = mode
         self.n_max = n_max

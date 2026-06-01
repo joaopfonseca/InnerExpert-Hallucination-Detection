@@ -193,7 +193,10 @@ class TokenMahalanobis(BaseBaseline):
             self.sigma_inv_.append(sigma_inv)
 
         # ------------------------
-        # Step 2: Per-layer MD for ALL tokens, then sequence-level aggregation
+        # Step 2: Per-layer MD for ALL tokens, then sequence-level
+        # aggregation PER LAYER (matching official LinRegTokenMahalanobisDistance)
+        # Official: for each layer, compute MD scores, then average across tokens
+        # per sequence -> train_dists has shape (dev_samples, n_layers)
         # ------------------------
         md_features = np.zeros((n_tokens, n_layers))
         for layer_idx in range(n_layers):
@@ -206,9 +209,11 @@ class TokenMahalanobis(BaseBaseline):
         if self.handle_nan:
             md_features = self._safe_replace(md_features, fill_value=0.0)
 
-        # Sequence-level MD (mean across tokens, per answer)
-        seq_md = np.array([md_features[b*seq_len:(b+1)*seq_len].mean()
-                          for b in range(B)])
+        # Sequence-level MD: per-layer average across tokens -> (B, n_layers)
+        seq_md = np.array([
+            md_features[b*seq_len:(b+1)*seq_len].mean(axis=0)
+            for b in range(B)
+        ])  # Shape (B, n_layers)
 
         # ------------------------
         # Step 3: Ridge regression on sequence-level MD
@@ -224,7 +229,8 @@ class TokenMahalanobis(BaseBaseline):
         )
 
         # rankdata normalization (matching norm="norm" in official code)
-        X_raw = seq_md.reshape(-1, 1)
+        # seq_md shape: (B, n_layers)
+        X_raw = seq_md.copy()
         X_norm = np.zeros_like(X_raw)
         for col in range(X_norm.shape[1]):
             X_norm[:, col] = rankdata(X_raw[:, col])
@@ -395,13 +401,14 @@ class TokenMahalanobis(BaseBaseline):
         if self.handle_nan:
             md_features = self._safe_replace(md_features, fill_value=0.0)
 
-        # Sequence-level MD → rankdata normalization
-        seq_md = np.array([md_features[b*seq_len:(b+1)*seq_len].mean()
-                          for b in range(B)])
-        X_raw = seq_md.reshape(-1, 1)
-        X_norm = np.zeros_like(X_raw)
+        # Sequence-level MD per layer → per-column rankdata normalization
+        seq_md = np.array([
+            md_features[b*seq_len:(b+1)*seq_len].mean(axis=0)
+            for b in range(B)
+        ])  # Shape (B, n_layers)
+        X_norm = np.zeros_like(seq_md)
         for col in range(X_norm.shape[1]):
-            X_norm[:, col] = rankdata(X_raw[:, col])
+            X_norm[:, col] = rankdata(seq_md[:, col])
             X_norm[:, col] /= X_norm[:, col].max()
 
         md_preds = self.regressor_.predict(X_norm)
