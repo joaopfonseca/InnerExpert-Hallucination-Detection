@@ -168,19 +168,40 @@ class TokenMahalanobis(BaseBaseline):
         seq_labels = np.max(labels.reshape(B, seq_len), axis=1)
 
         # ------------------------
-        # Step 1: Per-layer centroid + cov_inv from TRAINING tokens
-        #   Following the official TokenMahalanobisDistance:
-        #   centroid = mean of train embeddings (optionally filtered by metric_thr)
+        # Step 1: Split train/dev before centroid computation
+        #   The official LinRegTokenMahalanobisDistance splits 50/50 first
+        #   (random_state=42) and computes centroids ONLY from train tokens.
+        #   This avoids data leakage from dev tokens into the centroid.
         # ------------------------
-        emb_for_centroid = flat_emb
+        from sklearn.model_selection import train_test_split
+        train_idx, dev_idx = train_test_split(
+            np.arange(B), test_size=0.5, random_state=42,
+            stratify=seq_labels if len(np.unique(seq_labels)) > 1 else None,
+        )
+
+        # Map token indices for training samples
+        token_train_idx = np.concatenate([
+            np.arange(b * seq_len, (b + 1) * seq_len)
+            for b in train_idx
+        ])
+        train_flat_emb = flat_emb[token_train_idx]
+
+        # ------------------------
+        # Step 2: Per-layer centroid + cov_inv from TRAINING tokens only
+        #   Following the official TokenMahalanobisDistance:
+        #   centroid = mean of train embeddings (filtered by metric_thr)
+        # ------------------------
+        emb_for_centroid = train_flat_emb
         if self.metric_thr > 0 and metrics is not None:
             metrics_arr = np.asarray(metrics, dtype=float).ravel()
             if len(metrics_arr) != n_tokens:
                 if len(metrics_arr) == B:
                     metrics_arr = np.repeat(metrics_arr, seq_len)
-            good = metrics_arr >= self.metric_thr
-            if good.sum() >= 10:
-                emb_for_centroid = flat_emb[good]
+            # Only consider training tokens for filtering
+            train_metrics = metrics_arr[token_train_idx]
+            good_train = train_metrics >= self.metric_thr
+            if good_train.sum() >= 10:
+                emb_for_centroid = train_flat_emb[good_train]
 
         self.centroids_ = []
         self.sigma_inv_ = []
@@ -193,7 +214,7 @@ class TokenMahalanobis(BaseBaseline):
             self.sigma_inv_.append(sigma_inv)
 
         # ------------------------
-        # Step 2: Per-layer MD for ALL tokens, then sequence-level
+        # Step 3: Per-layer MD for ALL tokens, then sequence-level
         # aggregation PER LAYER (matching official LinRegTokenMahalanobisDistance)
         # Official: for each layer, compute MD scores, then average across tokens
         # per sequence -> train_dists has shape (dev_samples, n_layers)
@@ -215,19 +236,6 @@ class TokenMahalanobis(BaseBaseline):
             for b in range(B)
         ])  # Shape (B, n_layers)
 
-        # ------------------------
-        # Step 3: Ridge regression on sequence-level MD
-        #   Following LinRegTokenMahalanobisDistance:
-        #   - Splits data 50/50 train/dev (random_state=42)
-        #   - Trains Ridge on train, predicts on dev
-        #   - Applies rankdata normalization
-        # ------------------------
-        from sklearn.model_selection import train_test_split
-        train_idx, dev_idx = train_test_split(
-            np.arange(B), test_size=0.5, random_state=42,
-            stratify=seq_labels if len(np.unique(seq_labels)) > 1 else None,
-        )
-
         # rankdata normalization (matching norm="norm" in official code)
         # seq_md shape: (B, n_layers)
         X_raw = seq_md.copy()
@@ -247,13 +255,15 @@ class TokenMahalanobis(BaseBaseline):
         dev_preds = self.regressor_.predict(X_dev)
 
         # ------------------------
-        # Step 3b: HUQ optional (following HUQ_LRTMD)
+        # Step 4: HUQ optional (following HUQ_LRTMD)
         # ------------------------
         if self.use_huq and 'greedy_log_likelihoods' in outputs:
             gll = outputs['greedy_log_likelihoods']  # (B, seq_len) or (B,)
             gll = np.asarray(gll, dtype=float)
             if gll.ndim > 1:
-                seq_logprob = np.sum(gll, axis=1)
+                # Official MaximumSequenceProbability: exp(mean(log_p))
+                # = geometric mean of per-token probabilities
+                seq_logprob = np.exp(np.mean(gll, axis=1))
             else:
                 seq_logprob = gll
 
@@ -275,10 +285,10 @@ class TokenMahalanobis(BaseBaseline):
                     alea_rank[(alea_rank > n_max) & (epi_rank <= n_lowest)]
                 return total
 
-            # Grid search over HUQ parameters (matching official grid)
-            combined_epi = np.concatenate([dev_preds, dev_preds])
-            combined_alea = np.concatenate([dev_msp, dev_msp])
-            combined_labels = np.concatenate([seq_labels[dev_idx], seq_labels[dev_idx]])
+            # Official HUQ_LRTMD uses dev set directly (no duplication)
+            combined_epi = dev_preds
+            combined_alea = dev_msp
+            combined_labels = seq_labels[dev_idx]
 
             best_prr = -np.inf
             for t_min in np.arange(0.0, 0.31, 0.05):
@@ -308,11 +318,20 @@ class TokenMahalanobis(BaseBaseline):
             if self.use_huq and 'scores' in outputs:
                 scores = outputs['scores']
                 if isinstance(scores, np.ndarray):
-                    log_probs = np.log(
-                        np.exp(scores - scores.max(axis=-1, keepdims=True)).sum(axis=-1)
+                    logits = scores
+                    if logits.ndim == 3:
+                        logits = logits[:, -1, :]
+                    logsum = np.log(
+                        np.exp(logits - logits.max(axis=-1, keepdims=True)).sum(axis=-1)
                         + 1e-10
                     )
-                    seq_logprob = np.sum(log_probs, axis=1)
+                    log_probs = logits - logsum[:, None]
+                    probs = np.exp(log_probs)
+                    if probs.ndim == 2:
+                        # MSP = max softmax per token, geometric mean across sequence
+                        seq_logprob = np.exp(np.mean(np.log(probs.max(axis=-1) + 1e-10), axis=1))
+                    else:
+                        seq_logprob = np.zeros(B)
                 else:
                     seq_logprob = np.zeros(B)
 
@@ -331,9 +350,10 @@ class TokenMahalanobis(BaseBaseline):
                 train_msp = seq_logprob[train_idx]
                 dev_msp = seq_logprob[dev_idx]
 
-                combined_epi = np.concatenate([dev_preds, dev_preds])
-                combined_alea = np.concatenate([dev_msp, dev_msp])
-                combined_labels = np.concatenate([seq_labels[dev_idx], seq_labels[dev_idx]])
+                # Official HUQ_LRTMD uses dev set directly (no duplication)
+                combined_epi = dev_preds
+                combined_alea = dev_msp
+                combined_labels = seq_labels[dev_idx]
 
                 best_prr = -np.inf
                 for t_min in np.arange(0.0, 0.31, 0.05):
@@ -416,22 +436,30 @@ class TokenMahalanobis(BaseBaseline):
         if not self.use_huq:
             return md_preds
 
-        # HUQ: need MSP
+        # HUQ: need MSP (MaximumSequenceProbability = exp(mean(log_likelihoods)))
         seq_logprob = None
         if 'greedy_log_likelihoods' in outputs:
             gll = np.asarray(outputs['greedy_log_likelihoods'], dtype=float)
             if gll.ndim > 1:
-                seq_logprob = np.sum(gll, axis=1)
+                seq_logprob = np.exp(np.mean(gll, axis=1))
             else:
-                seq_logprob = gll
+                seq_logprob = np.exp(np.asarray(gll))
         elif 'scores' in outputs:
             scores = outputs['scores']
             if isinstance(scores, np.ndarray):
-                log_probs = np.log(
-                    np.exp(scores - scores.max(axis=-1, keepdims=True)).sum(axis=-1)
+                logits = scores
+                if logits.ndim == 3:
+                    logits = logits[:, -1, :]
+                logsum = np.log(
+                    np.exp(logits - logits.max(axis=-1, keepdims=True)).sum(axis=-1)
                     + 1e-10
                 )
-                seq_logprob = np.sum(log_probs, axis=1)
+                log_probs = logits - logsum[:, None]
+                probs = np.exp(log_probs)
+                if probs.ndim == 2:
+                    seq_logprob = np.exp(np.mean(np.log(probs.max(axis=-1) + 1e-10), axis=1))
+                else:
+                    seq_logprob = np.zeros(B)
             else:
                 seq_logprob = np.zeros(B)
 
