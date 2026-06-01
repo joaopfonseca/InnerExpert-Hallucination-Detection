@@ -239,8 +239,6 @@ class TOHA(BaseBaseline):
         if self.handle_nan:
             all_features = self._safe_replace(all_features, fill_value=0.0)
 
-        head_names = [f"{l}_{h}" for l in range(n_layers) for h in range(n_heads)]
-
         if self.mode == "supervised":
             if len(np.unique(labels)) < 2:
                 # Single class — fallback to uniform averaging
@@ -288,39 +286,37 @@ class TOHA(BaseBaseline):
                 )
 
         else:
-            # Unsupervised mode
+            # Unsupervised mode — matches official greedy selection by diff-of-means
             if len(np.unique(labels)) >= 2:
                 hal_mean = all_features[labels == 1].mean(axis=0)
                 fact_mean = all_features[labels == 0].mean(axis=0)
-                diff = np.abs(hal_mean - fact_mean)
+                diff = hal_mean - fact_mean  # Signed difference (not abs)
             else:
-                # No labels available — use variance across samples
                 diff = all_features.std(axis=0)
 
-            # Greedily select best heads (paper's greedy approach)
+            # Greedy: pick highest-diff heads one at a time, evaluate AUROC
             selected = []
             remaining = list(range(n_layers * n_heads))
-            best_auc = 0
+            best_auroc = -1
+            n_opt = 0
+            diff_copy = diff.copy()
 
-            heads_by_diff = np.argsort(diff)[::-1]
-
-            for n in range(1, min(self.n_max, len(heads_by_diff)) + 1):
-                candidate_heads = heads_by_diff[:n]
-                scores = all_features[:, candidate_heads].mean(axis=1)
+            for n in range(1, min(self.n_max, len(remaining)) + 1):
+                best_idx = np.argmax(np.abs(diff_copy))
+                selected.append(int(best_idx))
+                diff_copy[best_idx] = -np.inf  # Mark as used
 
                 if len(np.unique(labels)) >= 2:
+                    scores = all_features[:, selected].mean(axis=1)
                     try:
-                        auc = roc_auc_score(labels, scores)
+                        auroc = roc_auc_score(labels, scores)
                     except Exception:
-                        auc = 0
-                else:
-                    auc = 0
+                        auroc = 0
+                    if auroc > best_auroc:
+                        best_auroc = auroc
+                        n_opt = n
 
-                if auc >= best_auc:
-                    best_auc = auc
-                    selected = list(candidate_heads)
-
-            self.selected_heads_ = selected
+            self.selected_heads_ = selected[:n_opt] if n_opt > 0 else selected[:1]
 
         # Find optimal threshold
         train_scores = self.predict_proba(outputs)
@@ -389,7 +385,8 @@ class TOHA(BaseBaseline):
                 return self.clf_.predict_proba(selected)[:, 1]
             return all_features.mean(axis=1)
         else:
-            return selected.mean(axis=1)
+            # Unsupervised: mean of absolute MTopDiv (matches official code)
+            return np.abs(selected).mean(axis=1)
 
     def predict(self, outputs):
         """Predict binary labels (0=factual, 1=hallucinated)."""

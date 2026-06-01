@@ -179,7 +179,8 @@ class TokenMahalanobis(BaseBaseline):
 
         correct_mask = labels == 0
         if correct_mask.sum() == 0:
-            raise ValueError("No correct tokens (label=0) found.")
+            print("  WARNING: No correct tokens (label=0) found. "
+                  "Centroid will be estimated from all tokens.")
 
         # Process quality metrics for token filtering
         if metrics is not None:
@@ -190,19 +191,24 @@ class TokenMahalanobis(BaseBaseline):
                 if len(metrics) == B:
                     metrics = np.repeat(metrics, seq_len)
 
-        # Per-layer: compute centroid + cov_inv from correct tokens
-        # If metric_thr > 0, use only high-quality correct tokens
+        # Per-layer: compute centroid + cov_inv from ALL training tokens
+        # (The MD per layer is unsupervised — centroid is mean of all training
+        # embeddings. The supervised part is the Ridge regression that learns
+        # to map per-layer MD scores to uncertainty.
+        # If metric_thr > 0, we can filter low-quality tokens as the paper does.)
         self.centroids_ = []
         self.sigma_inv_ = []
 
-        for layer_idx in range(n_layers):
-            layer_emb = flat_emb[correct_mask, layer_idx, :]  # (n_correct, hidden_size)
+        # Determine which tokens to use for centroid/cov estimation
+        # Default: all tokens. If metric_thr > 0, filter by quality.
+        emb_for_centroid = flat_emb  # All tokens by default
+        if self.metric_thr > 0 and metrics is not None:
+            good_quality = metrics >= self.metric_thr
+            if good_quality.sum() >= 10:
+                emb_for_centroid = flat_emb[good_quality]
 
-            if self.metric_thr > 0 and metrics is not None:
-                correct_metrics = metrics[correct_mask]
-                high_quality = correct_metrics >= self.metric_thr
-                if high_quality.sum() >= 10:  # Paper's threshold
-                    layer_emb = layer_emb[high_quality]
+        for layer_idx in range(n_layers):
+            layer_emb = emb_for_centroid[:, layer_idx, :]  # (n_used, hidden_size)
 
             centroid = layer_emb.mean(axis=0)
             sigma_inv = self._compute_inv_covariance(centroid, layer_emb)
@@ -337,7 +343,7 @@ class TokenMahalanobis(BaseBaseline):
         self.threshold_ = best_thresh
 
         print(f"  [TokenMahalanobis] fit: {n_layers} layers, "
-              f"{int(correct_mask.sum())} correct tokens, "
+              f"{int(correct_mask.sum())} correct tokens out of {n_tokens}, "
               f"{'HUQ' if self.use_huq else 'Ridge'} mode, "
               f"threshold={best_thresh:.4f} F1={best_f1:.4f}")
 
