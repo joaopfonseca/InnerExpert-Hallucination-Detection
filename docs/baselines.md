@@ -98,6 +98,68 @@ Each branch produces a latent vector; branch outputs are fused via attention or 
 
 **Rhetorical purpose:** Trainable comparison — both our method and HaluNet are lightweight trainable classifiers. Can MoE signals improve over standard signals within the same training paradigm?
 
+### 7. Token-Level Mahalanobis Distance (Vazhentsev et al., 2025)
+
+A density-based uncertainty quantification method adapted from classification OOD detection to text generation. Instead of computing uncertainty from output probabilities or generation consistency, it looks at the geometry of hidden state embeddings across decoder layers.
+
+**How it works:**
+
+1. **Extract token embeddings** from multiple decoder layers (not just the last layer).
+2. **Estimate density** of the "factual" embedding distribution: for each layer, compute the class-conditional mean and shared covariance of tokens labeled as factual (ground truth).
+3. **Compute Mahalanobis distance** per token per layer: MD(x) = √((x − μ)ᵀ Σ⁻¹ (x − μ)). This measures how far a token's embedding is from the factual distribution — larger MD → more atypical → more likely hallucinated.
+4. **Dimensionality reduction**: Apply PCA across the layer-wise MD features.
+5. **Train linear regression** (Ridge) on the PCA-reduced features, optionally augmented with the sequence's log-probability, to produce a continuous uncertainty score.
+
+**Key properties:**
+- **Per-token:** YES — computes an uncertainty score for each generated token.
+- **Generations needed:** 1 (single-pass, no sampling).
+- **Training required:** YES — requires labeled "factual" tokens to estimate class-conditional means and covariance, plus regression training.
+- **Signals used:** Hidden state embeddings from multiple decoder layers (+ optional log-probabilities).
+- **OOD generalization:** Strong, since Mahalanobis distance measures distributional atypicality regardless of the specific task.
+- **Computational efficiency:** Moderate — requires per-layer covariance estimation (O(d³) per layer where d = hidden size) and PCA. For typical setups (d=768, ~20-32 layers), this is tractable.
+
+**Paper:** Vazhentsev et al., "Token-Level Density-Based Uncertainty Quantification Methods for Eliciting Truthfulness of Large Language Models" (arXiv 2502.14427, 2025)
+**Code:** https://github.com/ArtemVazh/token_mahalanobis_distance
+
+**Rhetorical purpose:** Internal signal comparison — does MoE routing beat density-based uncertainty from hidden states?
+
+### 8. TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025)
+
+A fundamentally different approach that treats attention maps as weighted graphs and uses topological data analysis to detect hallucination. Completely orthogonal to both routing-based and probability-based methods.
+
+**How it works (original):**
+
+1. **Build attention graphs**: For each attention head, treat the attention matrix A ∈ ℝ^(seq_len × seq_len) as a weighted directed graph. The prompt tokens form one subgraph; the generated tokens form another.
+2. **Compute topological divergence**: Use persistent homology to compare the topological structure of prompt and response subgraphs. Persistent homology tracks how connected components, loops, and voids in the graph appear and disappear as the filtration threshold varies.
+3. **Identify hallucination-aware heads**: Some attention heads exhibit systematic topological differences between factual and hallucinated responses. These heads can be selected with minimal annotated data.
+4. **Aggregate divergence**: The final score is the aggregate topological divergence across selected heads.
+
+**Practical approximation (this implementation):**
+
+Since persistent homology requires specialized TDA libraries (gudhi, ripser) and is computationally expensive, we implement a practical approximation based on attention entropy:
+
+1. **Attention entropy per token**: For each head, compute the Shannon entropy of each token's attention distribution. High entropy = attention is spread diffusely across many source tokens; low entropy = attention is sharply focused.
+2. **Prompt-to-response entropy shift**: Measure the change in attention entropy from prompt tokens to generated tokens. Hallucinated responses tend to have more diffuse attention (higher entropy) on response tokens.
+3. **Concentration ratio**: Fraction of attention mass on the top-K source tokens. Hallucinated responses have lower concentration (more distributed attention).
+4. **KL divergence**: Divergence between prompt attention distribution and response attention distribution. High divergence indicates the response is attending to different patterns.
+5. **Frobenius divergence**: Norm of the difference between the prompt and response attention subgraphs.
+6. **Spectral entropy**: Entropy of the graph Laplacian's eigenvalue distribution, capturing overall topological complexity.
+
+These features are combined per head; the fit() method selects heads that best discriminate hallucinated vs factual responses via AUROC-based weighting.
+
+**Key properties:**
+- **Per-token:** NO (head-level, can be mapped to tokens).
+- **Generations needed:** 1 (single-pass).
+- **Training required:** NO (training-free head selection, though few annotated examples improve selection).
+- **Signals used:** Attention matrices (all layers, all heads).
+- **Computational efficiency:** Lightweight — feature extraction is O(seq_len² × n_layers × n_heads), comparable to computing attention metrics.
+- **Orthogonal signal:** Attention topology captures completely different structure from routing entropy or output probability.
+
+**Paper:** Bazarova et al., "Hallucination Detection in LLMs with Topological Divergence on Attention Graphs" (arXiv 2504.10063, 2025)
+**Code:** https://github.com/sb-ai-lab/TOHA
+
+**Rhetorical purpose:** Orthogonal signal — does topology of attention capture uncertainty that routing and density miss?
+
 ## Excluded Baselines
 
 | Baseline | Reason for Exclusion |
@@ -116,4 +178,6 @@ Each branch produces a latent vector; branch outputs are fused via attention or 
 | LLM-Check | Internal signal | 1 | No | Hidden states, attention |
 | Semantic Energy | Internal signal | 1 | No | Penultimate logits + semantic clustering |
 | HaluNet | Trainable | 1 | Yes | Token probs, semantic embeddings, distributional uncertainty |
+| Token Mahalanobis | Density-based | 1 | Yes | Hidden states (multi-layer) |
+| TOHA | Topology-based | 1 | No | Attention matrices |
 | **Ours** | Internal signal (MoE) | 1 | No (optionally) | All of LLM-Check + routing entropy, expert similarity, expert usage, Gini, Herfindahl |
