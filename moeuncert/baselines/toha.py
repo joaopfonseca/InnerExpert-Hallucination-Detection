@@ -294,7 +294,9 @@ class TOHA(BaseBaseline):
             else:
                 diff = all_features.std(axis=0)
 
-            # Greedy: pick highest-diff heads one at a time, evaluate AUROC
+            # Greedy: pick highest-signed-diff heads one at a time,
+            # evaluate AUROC (matches official: argmax of signed diff,
+            # not absolute)
             selected = []
             remaining = list(range(n_layers * n_heads))
             best_auroc = -1
@@ -302,7 +304,7 @@ class TOHA(BaseBaseline):
             diff_copy = diff.copy()
 
             for n in range(1, min(self.n_max, len(remaining)) + 1):
-                best_idx = np.argmax(np.abs(diff_copy))
+                best_idx = np.argmax(diff_copy)  # signed max, not abs
                 selected.append(int(best_idx))
                 diff_copy[best_idx] = -np.inf  # Mark as used
 

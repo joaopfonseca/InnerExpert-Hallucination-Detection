@@ -261,14 +261,14 @@ class TokenMahalanobis(BaseBaseline):
             gll = outputs['greedy_log_likelihoods']  # (B, seq_len) or (B,)
             gll = np.asarray(gll, dtype=float)
             if gll.ndim > 1:
-                # Official MaximumSequenceProbability: exp(mean(log_p))
-                # = geometric mean of per-token probabilities
-                seq_logprob = np.exp(np.mean(gll, axis=1))
+                # Official MaximumSequenceProbability: -sum(log_likelihoods)
+                # Higher = more uncertain. Matches lm_polygraph source.
+                seq_msp = -np.sum(gll, axis=1)
             else:
-                seq_logprob = gll
+                seq_msp = -np.asarray(gll)
 
-            train_msp = seq_logprob[train_idx]
-            dev_msp = seq_logprob[dev_idx]
+            train_msp = seq_msp[train_idx]
+            dev_msp = seq_msp[dev_idx]
 
             def total_uncertainty(epistemic, aleatoric, t_min, t_max, alpha):
                 """Matching official total_uncertainty_linear_step exactly."""
@@ -288,26 +288,34 @@ class TokenMahalanobis(BaseBaseline):
             # Official HUQ_LRTMD uses dev set directly (no duplication)
             combined_epi = dev_preds
             combined_alea = dev_msp
-            combined_labels = seq_labels[dev_idx]
+            # Labels: convert to quality metric where higher = better
+            # (1 - label) so factual (0) → 1.0, hallucinated (1) → 0.0
+            combined_quality = 1.0 - seq_labels[dev_idx]
 
-            best_prr = -np.inf
+            # Official best_prr starts with PRR of raw epistemic signal
+            from sklearn.metrics import roc_auc_score
+
+            def compute_prr_proxy(unc_scores, quality):
+                """PRR proxy: AUROC of uncertainty scores vs quality.
+                Higher unc for positive class (hallucination=higher uncertainty)
+                means higher AUROC = better detection.
+                This approximates PRR directionally."""
+                if len(np.unique(quality)) > 1:
+                    return roc_auc_score(quality, unc_scores)
+                return -np.inf
+
+            best_prr = compute_prr_proxy(combined_epi, combined_quality)
             for t_min in np.arange(0.0, 0.31, 0.05):
                 for t_max in np.arange(0.8, 1.01, 0.05):
                     for alpha in np.arange(0.0, 1.01, 0.1):
                         unc = total_uncertainty(combined_epi, combined_alea,
                                                  t_min, t_max, alpha)
-                        # Use AUROC as proxy for Prediction Rejection Area
-                        if len(np.unique(combined_labels)) > 1:
-                            from sklearn.metrics import roc_auc_score
-                            try:
-                                score = roc_auc_score(combined_labels, unc)
-                                if score > best_prr:
-                                    best_prr = score
-                                    self.huq_t_min_ = t_min
-                                    self.huq_t_max_ = t_max
-                                    self.huq_alpha_ = alpha
-                            except Exception:
-                                pass
+                        score = compute_prr_proxy(unc, combined_quality)
+                        if score > best_prr:
+                            best_prr = score
+                            self.huq_t_min_ = t_min
+                            self.huq_t_max_ = t_max
+                            self.huq_alpha_ = alpha
 
             # Store train dev predictions for inference-time concatenation
             self.train_dev_md_ = dev_preds
@@ -326,14 +334,10 @@ class TokenMahalanobis(BaseBaseline):
                         + 1e-10
                     )
                     log_probs = logits - logsum[:, None]
-                    probs = np.exp(log_probs)
-                    if probs.ndim == 2:
-                        # MSP = max softmax per token, geometric mean across sequence
-                        seq_logprob = np.exp(np.mean(np.log(probs.max(axis=-1) + 1e-10), axis=1))
-                    else:
-                        seq_logprob = np.zeros(B)
+                    # Negative log max probability per token, sum across sequence
+                    seq_msp = -np.sum(np.max(log_probs, axis=-1), axis=1)
                 else:
-                    seq_logprob = np.zeros(B)
+                    seq_msp = np.zeros(B)
 
                 def total_uncertainty(epistemic, aleatoric, t_min, t_max, alpha):
                     n = len(epistemic)
@@ -347,31 +351,30 @@ class TokenMahalanobis(BaseBaseline):
                         alea_rank[(alea_rank > n_max) & (epi_rank <= n_lowest)]
                     return total
 
-                train_msp = seq_logprob[train_idx]
-                dev_msp = seq_logprob[dev_idx]
-
-                # Official HUQ_LRTMD uses dev set directly (no duplication)
+                dev_msp = seq_msp[dev_idx]
                 combined_epi = dev_preds
                 combined_alea = dev_msp
-                combined_labels = seq_labels[dev_idx]
+                combined_quality = 1.0 - seq_labels[dev_idx]
 
-                best_prr = -np.inf
+                from sklearn.metrics import roc_auc_score
+
+                def compute_prr_proxy(unc_scores, quality):
+                    if len(np.unique(quality)) > 1:
+                        return roc_auc_score(quality, unc_scores)
+                    return -np.inf
+
+                best_prr = compute_prr_proxy(combined_epi, combined_quality)
                 for t_min in np.arange(0.0, 0.31, 0.05):
                     for t_max in np.arange(0.8, 1.01, 0.05):
                         for alpha in np.arange(0.0, 1.01, 0.1):
                             unc = total_uncertainty(combined_epi, combined_alea,
                                                      t_min, t_max, alpha)
-                            if len(np.unique(combined_labels)) > 1:
-                                from sklearn.metrics import roc_auc_score
-                                try:
-                                    score = roc_auc_score(combined_labels, unc)
-                                    if score > best_prr:
-                                        best_prr = score
-                                        self.huq_t_min_ = t_min
-                                        self.huq_t_max_ = t_max
-                                        self.huq_alpha_ = alpha
-                                except Exception:
-                                    pass
+                            score = compute_prr_proxy(unc, combined_quality)
+                            if score > best_prr:
+                                best_prr = score
+                                self.huq_t_min_ = t_min
+                                self.huq_t_max_ = t_max
+                                self.huq_alpha_ = alpha
                 self.train_dev_md_ = dev_preds
                 self.train_dev_msp_ = dev_msp
 
@@ -436,14 +439,14 @@ class TokenMahalanobis(BaseBaseline):
         if not self.use_huq:
             return md_preds
 
-        # HUQ: need MSP (MaximumSequenceProbability = exp(mean(log_likelihoods)))
+        # HUQ: need MSP (MaximumSequenceProbability = -sum(log_likelihoods))
         seq_logprob = None
         if 'greedy_log_likelihoods' in outputs:
             gll = np.asarray(outputs['greedy_log_likelihoods'], dtype=float)
             if gll.ndim > 1:
-                seq_logprob = np.exp(np.mean(gll, axis=1))
+                seq_logprob = -np.sum(gll, axis=1)
             else:
-                seq_logprob = np.exp(np.asarray(gll))
+                seq_logprob = -np.asarray(gll)
         elif 'scores' in outputs:
             scores = outputs['scores']
             if isinstance(scores, np.ndarray):
@@ -455,11 +458,7 @@ class TokenMahalanobis(BaseBaseline):
                     + 1e-10
                 )
                 log_probs = logits - logsum[:, None]
-                probs = np.exp(log_probs)
-                if probs.ndim == 2:
-                    seq_logprob = np.exp(np.mean(np.log(probs.max(axis=-1) + 1e-10), axis=1))
-                else:
-                    seq_logprob = np.zeros(B)
+                seq_logprob = -np.sum(np.max(log_probs, axis=-1), axis=1)
             else:
                 seq_logprob = np.zeros(B)
 
