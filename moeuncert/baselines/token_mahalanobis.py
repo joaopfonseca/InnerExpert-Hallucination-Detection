@@ -7,28 +7,41 @@ https://github.com/ArtemVazh/token_mahalanobis_distance
 Paper: "Token-Level Density-Based Uncertainty Quantification Methods for
        Eliciting Truthfulness of Large Language Models" (NAACL 2025)
 
-Algorithm:
-    1. Extract token embeddings from multiple decoder layers.
-    2. For each layer, compute a class-conditional centroid (mean of tokens
-       labeled as "correct/factual") and a shared covariance matrix.
-    3. Compute the Mahalanobis distance MD(x) = sqrt((x-μ)^T Σ^{-1} (x-μ))
-       for every token at every layer.
-    4. (Optional) Filter training tokens by a quality metric threshold to
-       include only high-quality correct tokens.
-    5. Train a Ridge regression meta-model on the layer-wise MD features
-       to predict a continuous quality score (higher uncertainty = worse).
-    6. Per the paper's HUQ extension, also uses Maximum Sequence Probability
-       as an aleatoric uncertainty signal in a two-stage combination.
+Algorithm (following the official codebase):
 
-NOTE: The official paper's main method combines per-layer MD scores as
-features to a meta-regressor that predicts a quality metric (not binary
-hallucination labels). Binary classification is done via thresholding on
-the predicted continuous score.
+    === TokenMahalanobisDistance (per-layer unsupervised MD) ===
+    1. For each layer (or one layer), extract token embeddings.
+    2. Compute centroid = mean embedding of training tokens (optionally
+       filtered by quality metric threshold).
+    3. Compute regularized inverse covariance from training embeddings
+       centered around the known centroid.
+    4. MD(x) = sqrt((x - μ)^T Σ^{-1} (x - μ)) for every token.
+    5. Aggregate per-sequence: mean or sum across tokens.
+
+    === LinRegTokenMahalanobisDistance (supervised meta-model) ===
+    6. Split training data: 50% train centroids, 50% dev MD + meta-model.
+    7. For each hidden layer, compute per-layer MD and aggregate to
+       sequence-level scores.
+    8. Train Ridge regression on multi-layer MD features (with optional
+       rankdata normalization) to predict a continuous quality metric.
+    9. Use the Ridge predictions (= y_preds) as the epistemic signal.
+
+    === HUQ_LRTMD (Hybrid Uncertainty Quantification) ===
+    10. Use MD-based y_preds as epistemic, MSP as aleatoric.
+    11. Grid-search HUQ parameters (t_min, t_max, alpha) maximizing
+        Prediction Rejection Area (PRR) on the dev set.
+    12. At inference: concatenate train+test, compute total_uncertainty,
+        then strip training portion.
+
+NOTE: This simplified version does per-sequence aggregation (mean MD
+across tokens per answer) as the base MD feature, then follows the
+same Ridge → HUQ pipeline. The full official code supports per-layer
+MD as multi-dimensional features with optional decorrelation/PCA.
 """
 
 import numpy as np
-from sklearn.linear_model import Ridge, RidgeCV
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Ridge
+from scipy.stats import rankdata
 
 from ._base import BaseBaseline
 
@@ -40,28 +53,21 @@ JITTERS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]
 class TokenMahalanobis(BaseBaseline):
     """Token-Level Mahalanobis Distance baseline (Vazhentsev et al., 2025).
 
-    Follows the paper's supervised approach:
-    - For each selected layer, compute centroid + shared covariance from
-      "correct" training tokens.
-    - Compute per-token MD for every token at every layer.
-    - Train a Ridge regression on layer-wise MD features (optionally with
-      PCA/correlation-based feature reduction) to predict a quality score.
+    Models the official LinRegTokenMahalanobisDistance + HUQ_LRTMD pipeline.
 
-    The HUQ (Hybrid Uncertainty Quantification) two-stage combination
-    with Maximum Sequence Probability is available via use_huq=True.
+    Step 1: Per-layer centroid + cov_inv from ALL training tokens.
+    Step 2: Per-layer MD → sequence-level aggregation → Ridge regression.
+    Step 3: (If use_huq) HUQ combination of Ridge predictions (epistemic)
+            + MSP (aleatoric) via ranking-based two-stage formula.
 
     Args:
-        alpha: Ridge regression regularization strength. If None, uses
-            RidgeCV with CV search. Default 1.0.
-        positive: Constrain Ridge coefficients to be positive (paper found
-            this consistently effective). Default True.
-        metric_thr: Threshold on quality metric for training token filtering.
-            Only "correct" tokens with metric value >= metric_thr are used
-            for centroid/covariance estimation. 0.0 = use all. Default 0.0.
+        alpha: Ridge regularization strength. Default 1.0.
+        positive: Constrain Ridge coefficients to be positive. Default True.
+        metric_thr: Quality metric threshold for token filtering when
+            estimating centroid/covariance. 0 = no filtering. Default 0.0.
         handle_nan: Replace inf/nan with 0. Default True.
-        use_huq: If True, combine MD scores with Maximum Sequence
-            Probability via the HUQ ranking step from the paper.
-            If False, use Ridge directly on MD features. Default True.
+        use_huq: If True, use HUQ (MD + MSP ranking combination).
+            If False, use raw Ridge predictions. Default True.
     """
 
     def __init__(self, alpha=1.0, positive=True, metric_thr=0.0,
@@ -73,19 +79,19 @@ class TokenMahalanobis(BaseBaseline):
         self.use_huq = use_huq
 
         # Per-layer centroid and covariance inverse
-        self.centroids_ = []        # list of (hidden_size,) per layer
-        self.sigma_inv_ = []        # list of (hidden_size, hidden_size) per layer
+        self.centroids_ = []
+        self.sigma_inv_ = []
 
-        self.regressor_ = None      # Ridge meta-model on layer-wise MD features
+        self.regressor_ = None
         self.is_fitted_ = False
         self.threshold_ = 0.5
 
-        # HUQ parameters (learned via grid search on val split)
+        # HUQ parameters (learned via grid search on dev split)
         self.huq_t_min_ = 0.1
         self.huq_t_max_ = 0.9
         self.huq_alpha_ = 0.1
-        self.train_md_scores_ = None   # MD scores on training dev split
-        self.train_msp_scores_ = None  # MSP scores on training dev split
+        self.train_dev_md_ = None    # Ridge predictions on dev split
+        self.train_dev_msp_ = None   # MSP on dev split
 
     def _safe_replace(self, arr, fill_value=0.0):
         return np.where(np.isfinite(arr), arr, fill_value)
@@ -93,133 +99,105 @@ class TokenMahalanobis(BaseBaseline):
     def _compute_inv_covariance(self, centroid, embeddings):
         """Compute regularized inverse covariance matrix.
 
-        Matches the lm_polygraph `compute_inv_covariance` logic:
-        1. Center embeddings around the known centroid (not empirical mean).
-        2. Compute covariance = (X.T @ X) / (n-1).
-        3. Invert with progressive jitter if singular.
+        Matches lm_polygraph `compute_inv_covariance`:
+        1. Center embeddings around the KNOWN centroid (not empirical mean).
+        2. Cov = (X.T @ X) / (n - 1).
+        3. Invert with progressive jitter until stable.
 
         Args:
             centroid: (hidden_size,) — pre-computed mean.
             embeddings: (n, hidden_size) — training token embeddings.
 
         Returns:
-            (hidden_size, hidden_size) — pseudo-inverse of covariance.
+            (hidden_size, hidden_size) inverse covariance.
         """
         n = embeddings.shape[0]
-        centered = embeddings - centroid  # Use known centroid, not empirical mean
+        centered = embeddings - centroid
         cov = (centered.T @ centered) / (n - 1)
 
         for jitter in JITTERS:
             try:
                 cov_reg = cov + jitter * np.eye(cov.shape[0])
-                inv = np.linalg.inv(cov_reg)
-                return inv
+                return np.linalg.inv(cov_reg)
             except np.linalg.LinAlgError:
                 continue
 
-        # Ultimate fallback: pseudo-inverse
         return np.linalg.pinv(cov)
 
-    def _compute_mahalanobis_distance_with_centroid(self, centroid, sigma_inv,
-                                                     embeddings):
-        """Compute Mahalanobis distance to known centroid.
+    def _compute_mahalanobis_distance(self, centroid, sigma_inv, embeddings):
+        """MD(x) = sqrt((x - μ)^T Σ^{-1} (x - μ))
 
-        MD(x) = sqrt((x - μ)^T Σ^{-1} (x - μ))
-
-        Args:
-            centroid: (hidden_size,) — class-conditional mean.
-            sigma_inv: (hidden_size, hidden_size) — inverse covariance.
-            embeddings: (n, hidden_size) — token embeddings.
-
-        Returns:
-            (n,) array of MD values.
+        Matches mahalanobis_distance_with_known_centroids_sigma_inv.
         """
         centered = embeddings - centroid
         left = centered @ sigma_inv
-        md2 = np.sum(left * centered, axis=1)
-        md2 = np.maximum(md2, 0.0)  # Guard against tiny negatives
+        md2 = np.maximum(np.sum(left * centered, axis=1), 0.0)
         return np.sqrt(md2)
 
     def fit(self, outputs, labels, metrics=None):
-        """Fit the Token Mahalanobis Distance baseline.
-
-        Step 1: Extract per-layer centroids + cov inverses from correct tokens.
-        Step 2: Compute per-layer MD for all (or filtered) training tokens.
-        Step 3: Train Ridge regression (or HUQ) on layer-wise MD features.
+        """Fit the Token Mahalanobis Distance baseline + optional HUQ.
 
         Args:
-            outputs: Dict with 'hidden_states' tensor
-                (batch_size, seq_len, n_layers, hidden_size). May also
-                contain 'scores' (logits) for MSP features.
-            labels: Per-token labels (0=factual, 1=hallucinated). If 1D
-                with length == batch_size, repeated per-token.
+            outputs: Dict with 'hidden_states'
+                (B, seq_len, n_layers, hidden_size). May also contain
+                'scores' (logits) for MSP, and 'greedy_log_likelihoods'
+                for direct MSP access.
+            labels: Binary labels (0=factual, 1=hallucinated). Can be
+                per-token or per-answer.
             metrics: Optional per-token quality metrics for filtering
-                (used with metric_thr). If None, uses all correct tokens.
+                (used with metric_thr).
         """
         hidden_states = outputs['hidden_states']
         B, seq_len, n_layers, hidden_size = hidden_states.shape
 
-        # Flatten to (n_tokens, n_layers, hidden_size)
         flat_emb = hidden_states.reshape(-1, n_layers, hidden_size)
         n_tokens = flat_emb.shape[0]
 
-        # Process labels
+        # Process labels to per-token
         labels = np.asarray(labels, dtype=float)
-        if labels.ndim == 0 or labels.shape == ():
+        if labels.ndim == 0:
             labels = np.full(n_tokens, int(labels))
         elif labels.ndim == 1 and len(labels) == B:
             labels = np.repeat(labels, seq_len)
         elif labels.ndim == 2 and labels.shape == (B, seq_len):
             labels = labels.ravel()
-        elif len(labels) != n_tokens:
-            if len(labels) == B:
-                labels = np.repeat(labels, seq_len)
-            else:
-                raise ValueError(f"Labels shape {labels.shape} incompatible")
+        elif len(labels) != n_tokens and len(labels) == B:
+            labels = np.repeat(labels, seq_len)
 
-        correct_mask = labels == 0
-        if correct_mask.sum() == 0:
-            print("  WARNING: No correct tokens (label=0) found. "
-                  "Centroid will be estimated from all tokens.")
+        # Per-answer labels (for later threshold finding)
+        seq_labels = np.max(labels.reshape(B, seq_len), axis=1)
 
-        # Process quality metrics for token filtering
-        if metrics is not None:
-            metrics = np.asarray(metrics, dtype=float)
-            if metrics.ndim > 1:
-                metrics = metrics.ravel()
-            if len(metrics) != n_tokens:
-                if len(metrics) == B:
-                    metrics = np.repeat(metrics, seq_len)
+        # ------------------------
+        # Step 1: Per-layer centroid + cov_inv from TRAINING tokens
+        #   Following the official TokenMahalanobisDistance:
+        #   centroid = mean of train embeddings (optionally filtered by metric_thr)
+        # ------------------------
+        emb_for_centroid = flat_emb
+        if self.metric_thr > 0 and metrics is not None:
+            metrics_arr = np.asarray(metrics, dtype=float).ravel()
+            if len(metrics_arr) != n_tokens:
+                if len(metrics_arr) == B:
+                    metrics_arr = np.repeat(metrics_arr, seq_len)
+            good = metrics_arr >= self.metric_thr
+            if good.sum() >= 10:
+                emb_for_centroid = flat_emb[good]
 
-        # Per-layer: compute centroid + cov_inv from ALL training tokens
-        # (The MD per layer is unsupervised — centroid is mean of all training
-        # embeddings. The supervised part is the Ridge regression that learns
-        # to map per-layer MD scores to uncertainty.
-        # If metric_thr > 0, we can filter low-quality tokens as the paper does.)
         self.centroids_ = []
         self.sigma_inv_ = []
 
-        # Determine which tokens to use for centroid/cov estimation
-        # Default: all tokens. If metric_thr > 0, filter by quality.
-        emb_for_centroid = flat_emb  # All tokens by default
-        if self.metric_thr > 0 and metrics is not None:
-            good_quality = metrics >= self.metric_thr
-            if good_quality.sum() >= 10:
-                emb_for_centroid = flat_emb[good_quality]
-
         for layer_idx in range(n_layers):
-            layer_emb = emb_for_centroid[:, layer_idx, :]  # (n_used, hidden_size)
-
+            layer_emb = emb_for_centroid[:, layer_idx, :]
             centroid = layer_emb.mean(axis=0)
             sigma_inv = self._compute_inv_covariance(centroid, layer_emb)
-
             self.centroids_.append(centroid)
             self.sigma_inv_.append(sigma_inv)
 
-        # Compute per-layer MD for all tokens
+        # ------------------------
+        # Step 2: Per-layer MD for ALL tokens, then sequence-level aggregation
+        # ------------------------
         md_features = np.zeros((n_tokens, n_layers))
         for layer_idx in range(n_layers):
-            md_features[:, layer_idx] = self._compute_mahalanobis_distance_with_centroid(
+            md_features[:, layer_idx] = self._compute_mahalanobis_distance(
                 self.centroids_[layer_idx],
                 self.sigma_inv_[layer_idx],
                 flat_emb[:, layer_idx, :],
@@ -228,113 +206,150 @@ class TokenMahalanobis(BaseBaseline):
         if self.handle_nan:
             md_features = self._safe_replace(md_features, fill_value=0.0)
 
-        # Compute sequence-level MD (average across tokens per sample)
-        seq_md = np.zeros(B)
-        for b in range(B):
-            start = b * seq_len
-            end = start + seq_len
-            token_mds = md_features[start:end]
-            seq_md[b] = np.nanmean(token_mds)
+        # Sequence-level MD (mean across tokens, per answer)
+        seq_md = np.array([md_features[b*seq_len:(b+1)*seq_len].mean()
+                          for b in range(B)])
 
-        # Compute MSP (Maximum Sequence Probability) for HUQ
-        seq_logprobs = None
-        if 'scores' in outputs:
-            scores = outputs['scores']  # (B, seq_len, vocab)
-            if isinstance(scores, (np.ndarray,)):
-                log_probs = np.log(
-                    np.exp(scores - scores.max(axis=-1, keepdims=True)).sum(axis=-1)
-                    + 1e-10
-                )
+        # ------------------------
+        # Step 3: Ridge regression on sequence-level MD
+        #   Following LinRegTokenMahalanobisDistance:
+        #   - Splits data 50/50 train/dev (random_state=42)
+        #   - Trains Ridge on train, predicts on dev
+        #   - Applies rankdata normalization
+        # ------------------------
+        from sklearn.model_selection import train_test_split
+        train_idx, dev_idx = train_test_split(
+            np.arange(B), test_size=0.5, random_state=42,
+            stratify=seq_labels if len(np.unique(seq_labels)) > 1 else None,
+        )
+
+        # rankdata normalization (matching norm="norm" in official code)
+        X_raw = seq_md.reshape(-1, 1)
+        X_norm = np.zeros_like(X_raw)
+        for col in range(X_norm.shape[1]):
+            X_norm[:, col] = rankdata(X_raw[:, col])
+            X_norm[:, col] /= X_norm[:, col].max()
+
+        X_train = X_norm[train_idx]
+        X_dev = X_norm[dev_idx]
+
+        # Train Ridge
+        self.regressor_ = Ridge(alpha=self.alpha, positive=self.positive)
+        self.regressor_.fit(X_train, seq_labels[train_idx])
+
+        # Predict on dev — these are the MD-based epistemic scores
+        dev_preds = self.regressor_.predict(X_dev)
+
+        # ------------------------
+        # Step 3b: HUQ optional (following HUQ_LRTMD)
+        # ------------------------
+        if self.use_huq and 'greedy_log_likelihoods' in outputs:
+            gll = outputs['greedy_log_likelihoods']  # (B, seq_len) or (B,)
+            gll = np.asarray(gll, dtype=float)
+            if gll.ndim > 1:
+                seq_logprob = np.sum(gll, axis=1)
             else:
-                log_probs = np.zeros((B, seq_len))
-            seq_logprobs = np.sum(log_probs, axis=1)  # (B,)
+                seq_logprob = gll
 
-        # Build answer-level labels
-        seq_labels = np.zeros(B)
-        for b in range(B):
-            start = b * seq_len
-            end = start + seq_len
-            seq_labels[b] = np.max(labels[start:end])
+            train_msp = seq_logprob[train_idx]
+            dev_msp = seq_logprob[dev_idx]
 
-        if self.use_huq and seq_logprobs is not None:
-            # HUQ two-stage: grid search on val split
-            dev_size = min(0.5, 10.0 / B) if B > 10 else 0.3
-            train_idx, dev_idx = train_test_split(
-                np.arange(B), test_size=dev_size,
-                random_state=42, stratify=seq_labels if len(np.unique(seq_labels)) > 1 else None,
-            )
-
-            train_md = seq_md[train_idx]
-            dev_md = seq_md[dev_idx]
-            train_msp = seq_logprobs[train_idx]
-            dev_msp = seq_logprobs[dev_idx]
-
-            # Grid search for HUQ parameters on dev set
-            from scipy.stats import rankdata
-
-            def total_uncertainty(md_scores, msp_scores, t_min, t_max, alpha):
-                """HUQ combination: ranking-based two-stage uncertainty.
-
-                Matches the paper's total_uncertainty_linear_step.
-                """
-                n = len(md_scores)
+            def total_uncertainty(epistemic, aleatoric, t_min, t_max, alpha):
+                """Matching official total_uncertainty_linear_step exactly."""
+                n = len(epistemic)
                 n_lowest = int(n * t_min)
                 n_max = int(n * t_max)
 
-                md_rank = rankdata(md_scores)
-                msp_rank = rankdata(-msp_scores)  # Invert: lower MSP = higher uncertainty
+                alea_rank = rankdata(aleatoric)
+                epi_rank = rankdata(epistemic)
 
-                total = (1 - alpha) * md_rank + alpha * msp_rank
-                # For low epistemic uncertainty, use aleatoric
-                if n_lowest > 0:
-                    low_eps = np.argsort(md_rank)[:n_lowest]
-                    total[low_eps] = rankdata(msp_scores[low_eps])
-                # For high aleatoric uncertainty with low epistemic, use aleatoric
-                if n_max > 0:
-                    high_alea = np.where(msp_rank > n_max)[0]
-                    for idx in low_eps:
-                        if idx in high_alea:
-                            total[idx] = msp_rank[idx]
+                total = (1 - alpha) * epi_rank + alpha * alea_rank
+                total[epi_rank <= n_lowest] = rankdata(aleatoric[epi_rank <= n_lowest])
+                total[(alea_rank > n_max) & (epi_rank <= n_lowest)] = \
+                    alea_rank[(alea_rank > n_max) & (epi_rank <= n_lowest)]
                 return total
 
-            best_score = -np.inf
-            best_params = (0.1, 0.9, 0.1)
+            # Grid search over HUQ parameters (matching official grid)
+            combined_epi = np.concatenate([dev_preds, dev_preds])
+            combined_alea = np.concatenate([dev_msp, dev_msp])
+            combined_labels = np.concatenate([seq_labels[dev_idx], seq_labels[dev_idx]])
 
-            for t_min in np.arange(0.0, 0.35, 0.05):
-                for t_max in np.arange(0.7, 1.05, 0.05):
-                    for alpha in np.arange(0.0, 1.05, 0.1):
-                        scores = total_uncertainty(dev_md, dev_msp, t_min, t_max, alpha)
-                        dev_labels = seq_labels[dev_idx]
-                        if len(np.unique(dev_labels)) > 1:
+            best_prr = -np.inf
+            for t_min in np.arange(0.0, 0.31, 0.05):
+                for t_max in np.arange(0.8, 1.01, 0.05):
+                    for alpha in np.arange(0.0, 1.01, 0.1):
+                        unc = total_uncertainty(combined_epi, combined_alea,
+                                                 t_min, t_max, alpha)
+                        # Use AUROC as proxy for Prediction Rejection Area
+                        if len(np.unique(combined_labels)) > 1:
                             from sklearn.metrics import roc_auc_score
                             try:
-                                score = roc_auc_score(dev_labels, scores)
-                                if score > best_score:
-                                    best_score = score
-                                    best_params = (t_min, t_max, alpha)
+                                score = roc_auc_score(combined_labels, unc)
+                                if score > best_prr:
+                                    best_prr = score
+                                    self.huq_t_min_ = t_min
+                                    self.huq_t_max_ = t_max
+                                    self.huq_alpha_ = alpha
                             except Exception:
                                 pass
 
-            self.huq_t_min_, self.huq_t_max_, self.huq_alpha_ = best_params
-            self.train_md_scores_ = dev_md
-            self.train_msp_scores_ = dev_msp
-
-            # Fit Ridge on training data for use during inference
-            X_train = train_md.reshape(-1, 1)
-            y_train = seq_labels[train_idx]
-            self.regressor_ = Ridge(alpha=self.alpha, positive=self.positive)
-            self.regressor_.fit(X_train, y_train)
-
-            self.is_fitted_ = True
+            # Store train dev predictions for inference-time concatenation
+            self.train_dev_md_ = dev_preds
+            self.train_dev_msp_ = dev_msp
 
         else:
-            # Direct Ridge regression without HUQ
-            X = seq_md.reshape(-1, 1)
-            y = seq_labels
+            # Fallback: MSP via scores (logits)
+            if self.use_huq and 'scores' in outputs:
+                scores = outputs['scores']
+                if isinstance(scores, np.ndarray):
+                    log_probs = np.log(
+                        np.exp(scores - scores.max(axis=-1, keepdims=True)).sum(axis=-1)
+                        + 1e-10
+                    )
+                    seq_logprob = np.sum(log_probs, axis=1)
+                else:
+                    seq_logprob = np.zeros(B)
 
-            self.regressor_ = Ridge(alpha=self.alpha, positive=self.positive)
-            self.regressor_.fit(X, y)
-            self.is_fitted_ = True
+                def total_uncertainty(epistemic, aleatoric, t_min, t_max, alpha):
+                    n = len(epistemic)
+                    n_lowest = int(n * t_min)
+                    n_max = int(n * t_max)
+                    alea_rank = rankdata(aleatoric)
+                    epi_rank = rankdata(epistemic)
+                    total = (1 - alpha) * epi_rank + alpha * alea_rank
+                    total[epi_rank <= n_lowest] = rankdata(aleatoric[epi_rank <= n_lowest])
+                    total[(alea_rank > n_max) & (epi_rank <= n_lowest)] = \
+                        alea_rank[(alea_rank > n_max) & (epi_rank <= n_lowest)]
+                    return total
+
+                train_msp = seq_logprob[train_idx]
+                dev_msp = seq_logprob[dev_idx]
+
+                combined_epi = np.concatenate([dev_preds, dev_preds])
+                combined_alea = np.concatenate([dev_msp, dev_msp])
+                combined_labels = np.concatenate([seq_labels[dev_idx], seq_labels[dev_idx]])
+
+                best_prr = -np.inf
+                for t_min in np.arange(0.0, 0.31, 0.05):
+                    for t_max in np.arange(0.8, 1.01, 0.05):
+                        for alpha in np.arange(0.0, 1.01, 0.1):
+                            unc = total_uncertainty(combined_epi, combined_alea,
+                                                     t_min, t_max, alpha)
+                            if len(np.unique(combined_labels)) > 1:
+                                from sklearn.metrics import roc_auc_score
+                                try:
+                                    score = roc_auc_score(combined_labels, unc)
+                                    if score > best_prr:
+                                        best_prr = score
+                                        self.huq_t_min_ = t_min
+                                        self.huq_t_max_ = t_max
+                                        self.huq_alpha_ = alpha
+                                except Exception:
+                                    pass
+                self.train_dev_md_ = dev_preds
+                self.train_dev_msp_ = dev_msp
+
+        self.is_fitted_ = True
 
         # Find optimal threshold
         train_scores = self.predict_proba(outputs)
@@ -343,24 +358,22 @@ class TokenMahalanobis(BaseBaseline):
         self.threshold_ = best_thresh
 
         print(f"  [TokenMahalanobis] fit: {n_layers} layers, "
-              f"{int(correct_mask.sum())} correct tokens out of {n_tokens}, "
-              f"{'HUQ' if self.use_huq else 'Ridge'} mode, "
+              f"B={B}, {'HUQ' if self.use_huq else 'Ridge'} mode, "
               f"threshold={best_thresh:.4f} F1={best_f1:.4f}")
 
     def predict_proba(self, outputs):
         """Predict uncertainty scores.
 
-        Higher scores = more uncertain / more likely hallucinated.
-
-        For HUQ mode: combines MD and MSP via the learned two-stage ranking.
-        For Ridge mode: directly uses the regressor.
+        For HUQ: concatenate train dev + test predictions, rank together
+        via total_uncertainty_linear_step, then strip training portion.
+        For Ridge only: directly return Ridge predictions.
 
         Args:
             outputs: Dict with 'hidden_states' (B, seq_len, n_layers, h).
-                May contain 'scores' (logits) for MSP.
+                May contain 'greedy_log_likelihoods' or 'scores' for MSP.
 
         Returns:
-            (B,) array of uncertainty scores.
+            (B,) array of uncertainty scores (higher = more uncertain).
         """
         if not self.is_fitted_:
             raise RuntimeError("Not fitted. Call fit() first.")
@@ -369,10 +382,11 @@ class TokenMahalanobis(BaseBaseline):
         B, seq_len, n_layers, hidden_size = hidden_states.shape
 
         flat_emb = hidden_states.reshape(-1, n_layers, hidden_size)
+        n_tokens = flat_emb.shape[0]
 
-        md_features = np.zeros((B * seq_len, n_layers))
+        md_features = np.zeros((n_tokens, n_layers))
         for layer_idx in range(n_layers):
-            md_features[:, layer_idx] = self._compute_mahalanobis_distance_with_centroid(
+            md_features[:, layer_idx] = self._compute_mahalanobis_distance(
                 self.centroids_[layer_idx],
                 self.sigma_inv_[layer_idx],
                 flat_emb[:, layer_idx, :],
@@ -381,49 +395,65 @@ class TokenMahalanobis(BaseBaseline):
         if self.handle_nan:
             md_features = self._safe_replace(md_features, fill_value=0.0)
 
-        # Sequence-level MD
-        seq_md = np.zeros(B)
-        for b in range(B):
-            start = b * seq_len
-            end = start + seq_len
-            seq_md[b] = np.nanmean(md_features[start:end])
+        # Sequence-level MD → rankdata normalization
+        seq_md = np.array([md_features[b*seq_len:(b+1)*seq_len].mean()
+                          for b in range(B)])
+        X_raw = seq_md.reshape(-1, 1)
+        X_norm = np.zeros_like(X_raw)
+        for col in range(X_norm.shape[1]):
+            X_norm[:, col] = rankdata(X_raw[:, col])
+            X_norm[:, col] /= X_norm[:, col].max()
 
-        if self.use_huq and 'scores' in outputs:
-            # MSP
+        md_preds = self.regressor_.predict(X_norm)
+
+        if not self.use_huq:
+            return md_preds
+
+        # HUQ: need MSP
+        seq_logprob = None
+        if 'greedy_log_likelihoods' in outputs:
+            gll = np.asarray(outputs['greedy_log_likelihoods'], dtype=float)
+            if gll.ndim > 1:
+                seq_logprob = np.sum(gll, axis=1)
+            else:
+                seq_logprob = gll
+        elif 'scores' in outputs:
             scores = outputs['scores']
-            if isinstance(scores, (np.ndarray,)):
+            if isinstance(scores, np.ndarray):
                 log_probs = np.log(
                     np.exp(scores - scores.max(axis=-1, keepdims=True)).sum(axis=-1)
                     + 1e-10
                 )
+                seq_logprob = np.sum(log_probs, axis=1)
             else:
-                log_probs = np.zeros((B, seq_len))
-            seq_msp = np.sum(log_probs, axis=1)
+                seq_logprob = np.zeros(B)
 
-            # HUQ combination
-            from scipy.stats import rankdata
+        if seq_logprob is None:
+            return md_preds
 
-            n = B
-            n_lowest = int(n * self.huq_t_min_)
-            n_max = int(n * self.huq_t_max_)
+        # Concatenate train dev + test (matching official code)
+        msp_all = np.concatenate([self.train_dev_msp_, seq_logprob])
+        md_all = np.concatenate([self.train_dev_md_, md_preds])
 
-            md_rank = rankdata(seq_md)
-            msp_rank = rankdata(-seq_msp)
+        def total_uncertainty(epistemic, aleatoric, t_min, t_max, alpha):
+            n = len(epistemic)
+            n_lowest = int(n * t_min)
+            n_max = int(n * t_max)
+            alea_rank = rankdata(aleatoric)
+            epi_rank = rankdata(epistemic)
+            total = (1 - alpha) * epi_rank + alpha * alea_rank
+            total[epi_rank <= n_lowest] = rankdata(aleatoric[epi_rank <= n_lowest])
+            total[(alea_rank > n_max) & (epi_rank <= n_lowest)] = \
+                alea_rank[(alea_rank > n_max) & (epi_rank <= n_lowest)]
+            return total
 
-            total = (1 - self.huq_alpha_) * md_rank + self.huq_alpha_ * msp_rank
+        all_scores = total_uncertainty(
+            md_all, msp_all,
+            self.huq_t_min_, self.huq_t_max_, self.huq_alpha_,
+        )
 
-            if n_lowest > 0:
-                low_eps = np.argsort(md_rank)[:n_lowest]
-                total[low_eps] = rankdata(seq_msp[low_eps])
-            if n_max > 0:
-                high_alea = np.where(msp_rank > n_max)[0]
-                for idx in low_eps:
-                    if idx in high_alea:
-                        total[idx] = msp_rank[idx]
-
-            return total / total.max() if total.max() > 0 else total
-        else:
-            return self.regressor_.predict(seq_md.reshape(-1, 1))
+        # Strip training portion (matching official: ues = ues[:len(msp_eval)])
+        return all_scores[len(self.train_dev_msp_):]
 
     def predict(self, outputs):
         """Predict binary labels (0=factual, 1=hallucinated)."""
