@@ -45,9 +45,13 @@ from scipy.stats import rankdata
 
 from ._base import BaseBaseline
 
-# Small jitter values for covariance regularization, matching the paper's
-# lm_polygraph convention: progressively larger jitters if inversion fails.
-JITTERS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]
+# Jitter values for covariance regularization, matching lm_polygraph:
+# Progressive jitter from 1e-15 to 1e-1, with 1.0 as ultimate safety net.
+# The official code checks eigenvalues >= 0 (PSD) before inverting;
+# we use try/except LinAlgError, which needs the same jitter range.
+JITTERS = [1e-15, 1e-14, 1e-13, 1e-12, 1e-11, 1e-10,
+           1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4,
+           1e-3, 1e-2, 1e-1, 1.0]
 
 
 class TokenMahalanobis(BaseBaseline):
@@ -100,9 +104,10 @@ class TokenMahalanobis(BaseBaseline):
         """Compute regularized inverse covariance matrix.
 
         Matches lm_polygraph `compute_inv_covariance`:
-        1. Center embeddings around the KNOWN centroid (not empirical mean).
-        2. Cov = (X.T @ X) / (n - 1).
-        3. Invert with progressive jitter until stable.
+        1. Cov = (X - μ)^T (X - μ) / (n - 1) where μ = embeddings.mean(0).
+           (When centroid == mean(embeddings), this is equivalent to cov).
+        2. Add progressive jitter, check positive semidefinite via
+           eigenvalue check (matching official), then invert.
 
         Args:
             centroid: (hidden_size,) — pre-computed mean.
@@ -116,12 +121,15 @@ class TokenMahalanobis(BaseBaseline):
         cov = (centered.T @ centered) / (n - 1)
 
         for jitter in JITTERS:
+            cov_reg = cov + jitter * np.eye(cov.shape[0])
             try:
-                cov_reg = cov + jitter * np.eye(cov.shape[0])
-                return np.linalg.inv(cov_reg)
+                eigenvalues = np.linalg.eigh(cov_reg)[0]
+                if (eigenvalues >= 0).all():
+                    return np.linalg.inv(cov_reg)
             except np.linalg.LinAlgError:
                 continue
 
+        # Ultimate fallback
         return np.linalg.pinv(cov)
 
     def _compute_mahalanobis_distance(self, centroid, sigma_inv, embeddings):
