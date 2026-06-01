@@ -65,13 +65,14 @@ class TOHA(BaseBaseline):
             "response" — zero out response-to-response distances.
             Default "prompt".
         normalize_by_length: Divide MTopDiv by response length.
-            Default True.
+            The official code always normalizes; this parameter exists for
+            consistency. Default True matches official behavior.
         handle_nan: Replace inf/nan with 0. Default True.
     """
 
     def __init__(self, mode="supervised", n_max=6,
                  select_method="f_classif",
-                 zero_out="prompt", normalize_by_length=False,
+                 zero_out="prompt", normalize_by_length=True,
                  handle_nan=True):
         self.mode = mode
         self.n_max = n_max
@@ -239,79 +240,89 @@ class TOHA(BaseBaseline):
         if self.handle_nan:
             all_features = self._safe_replace(all_features, fill_value=0.0)
 
+        # Official pipeline: use held-out validation split for head selection
+        # (fit_hyperparameters(X_val, y_val)), then fit final classifier on
+        # full training set (fit(X_train, y_train)).
+        from sklearn.model_selection import train_test_split
+        val_size = min(0.3, max(0.1, 5 / B)) if B > 5 else 0.0
+
+        if val_size > 0 and len(np.unique(labels)) >= 2:
+            train_idx, val_idx = train_test_split(
+                np.arange(B), test_size=val_size, random_state=42,
+                stratify=labels if len(np.unique(labels)) > 1 else None,
+            )
+            X_val, y_val = all_features[val_idx], labels[val_idx]
+            X_train, y_train = all_features[train_idx], labels[train_idx]
+        else:
+            X_val, y_val = all_features, labels
+            X_train, y_train = all_features, labels
+
         if self.mode == "supervised":
-            if len(np.unique(labels)) < 2:
-                # Single class — fallback to uniform averaging
+            if len(np.unique(y_val)) < 2:
+                # Cannot do head selection — fallback to all heads
                 self.selected_heads_ = list(range(n_layers * n_heads))
-                self.clf_ = LogisticRegression(max_iter=1000)
-                self.clf_.fit(all_features, labels)
             else:
-                # Select heads using ANOVA F-value (matching official code)
+                # Select heads on validation set (matching official)
                 best_auc = 0
                 best_n = 1
-                best_feature_indices = list(range(min(self.n_max, n_layers * n_heads)))
-
                 for n in range(1, min(self.n_max, n_layers * n_heads) + 1):
                     selector = SelectKBest(
                         score_func=f_classif,
                         k=n,
                     )
-                    selector.fit(all_features, labels)
-                    selected = all_features[:, selector.get_support()]
+                    selector.fit(X_val, y_val)
+                    selected = X_val[:, selector.get_support()]
 
                     clf = LogisticRegression(max_iter=1000)
-                    clf.fit(selected, labels)
+                    clf.fit(selected, y_val)
 
                     try:
                         preds = clf.predict_proba(selected)[:, 1]
-                        auc = roc_auc_score(labels, preds)
+                        auc = roc_auc_score(y_val, preds)
                     except Exception:
                         auc = 0
 
                     if auc > best_auc:
                         best_auc = auc
                         best_n = n
-                        best_feature_indices = np.where(selector.get_support())[0]
 
-                # Re-fit with best n
+                # Select best-n features on validation
                 selector = SelectKBest(score_func=f_classif, k=best_n)
-                selector.fit(all_features, labels)
+                selector.fit(X_val, y_val)
                 best_feature_indices = np.where(selector.get_support())[0]
-
                 self.selected_heads_ = list(best_feature_indices)
-                self.clf_ = LogisticRegression(max_iter=1000)
-                self.clf_.fit(
-                    all_features[:, best_feature_indices],
-                    labels,
-                )
+
+            # Train final classifier on full training set (official step)
+            self.clf_ = LogisticRegression(max_iter=1000)
+            self.clf_.fit(
+                X_train[:, self.selected_heads_],
+                y_train,
+            )
 
         else:
             # Unsupervised mode — matches official greedy selection by diff-of-means
-            if len(np.unique(labels)) >= 2:
-                hal_mean = all_features[labels == 1].mean(axis=0)
-                fact_mean = all_features[labels == 0].mean(axis=0)
+            if len(np.unique(y_val)) >= 2:
+                hal_mean = X_val[y_val == 1].mean(axis=0)
+                fact_mean = X_val[y_val == 0].mean(axis=0)
                 diff = hal_mean - fact_mean  # Signed difference (not abs)
             else:
-                diff = all_features.std(axis=0)
+                diff = X_val.std(axis=0)
 
-            # Greedy: pick highest-signed-diff heads one at a time,
-            # evaluate AUROC (matches official: argmax of signed diff,
-            # not absolute)
+            # Greedy: pick highest-signed-diff heads one at a time, evaluate AUROC
             selected = []
-            remaining = list(range(n_layers * n_heads))
             best_auroc = -1
             n_opt = 0
             diff_copy = diff.copy()
 
-            for n in range(1, min(self.n_max, len(remaining)) + 1):
+            for n in range(1, min(self.n_max, n_layers * n_heads) + 1):
                 best_idx = np.argmax(diff_copy)  # signed max, not abs
                 selected.append(int(best_idx))
                 diff_copy[best_idx] = -np.inf  # Mark as used
 
-                if len(np.unique(labels)) >= 2:
-                    scores = all_features[:, selected].mean(axis=1)
+                if len(np.unique(y_val)) >= 2:
+                    scores = X_val[:, selected].mean(axis=1)
                     try:
-                        auroc = roc_auc_score(labels, scores)
+                        auroc = roc_auc_score(y_val, scores)
                     except Exception:
                         auroc = 0
                     if auroc > best_auroc:
