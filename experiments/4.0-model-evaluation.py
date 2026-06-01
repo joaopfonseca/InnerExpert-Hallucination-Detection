@@ -529,23 +529,18 @@ def evaluate_token_mahalanobis(
         fit_outputs["scores"] = outputs["scores"]
 
     baseline = TokenMahalanobis(
-        n_components=min(n_layers, 10),
         alpha=1.0,
-        use_logprob=("scores" in outputs),
+        positive=True,
+        use_huq=True,
     )
     baseline.fit(fit_outputs, token_labels)  # This also finds the optimal threshold
 
-    # Per-token predictions
-    token_scores = baseline.predict_proba(fit_outputs)  # (B, seq_len)
-
-    # Per-token output
-    token_qids = np.repeat(comp_qids, seq_len)
-    token_positions = np.tile(np.arange(seq_len), B)
+    # Answer-level predictions
+    scores = baseline.predict_proba(fit_outputs)  # (B,)
 
     token_df = pd.DataFrame({
-        "question_id": token_qids[valid_mask],
-        "token_position": token_positions[valid_mask],
-        "score": token_scores.ravel()[valid_mask],
+        "question_id": comp_qids,
+        "score": scores,
     })
 
     # Answer-level via aggregation
@@ -600,7 +595,7 @@ def evaluate_toha(
         fit_outputs["input_ids"] = outputs["input_ids"]
         fit_outputs["sequences"] = outputs["sequences"]
 
-    baseline = TOHA(agg="mean", n_top_heads=10)
+    baseline = TOHA(mode="supervised", n_max=6)
     baseline.fit(fit_outputs, sample_labels[valid_mask])
 
     scores = baseline.predict_proba(fit_outputs)

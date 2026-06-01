@@ -1,22 +1,32 @@
 """
 TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025).
 
-Uses topological divergence (persistent homology) on attention graphs to
-detect hallucinations. Higher topological divergence between prompt and
-response attention subgraphs indicates hallucination.
+Faithful re-implementation based on the paper and official source code at
+https://github.com/sb-ai-lab/TOHA
 
-Paper: Hallucination Detection in LLMs with Topological Divergence on
-       Attention Graphs (arXiv 2504.10063)
-Code: https://github.com/sb-ai-lab/TOHA
+Paper: "Hallucination Detection in LLMs with Topological Divergence on
+       Attention Graphs" (ACL 2026)
 
-Key idea: Transform attention weights to distance matrices, zero out
-prompt-to-prompt distances, compute persistent homology (H_0 barcode)
-via Vietoris-Rips filtration. The sum of barcode lengths (MTopDiv) is
-the uncertainty score. Hallucinated responses show higher topological
-divergence (less concentrated attention structure).
+Algorithm:
+    1. For each attention head, transform the attention matrix to a distance
+       matrix: d_ij = 1 - a_ij (clipped at 0), zero diagonal, symmetrise.
+    2. Zero out the prompt-to-prompt subgraph (distances between prompt
+       tokens set to 0), isolating the response subgraph's topology.
+    3. Compute MTopDiv: run Vietoris-Rips persistent homology (H_0) on the
+       resulting distance matrix and sum the finite barcode lengths.
+    4. Normalize by response length.
+    5. For supervised mode: select top-n heads using univariate feature
+       selection (ANOVA F-value), then fit LogisticRegression.
+    6. For unsupervised mode: select heads by difference of means between
+       hallucinated and factual → use the average MTopDiv of selected heads.
+
+Official code uses ripser for persistent homology and SelectKBest for
+feature selection. Head selection is done on a separate validation set
+via `fit_hyperparameters`.
 """
 
 import numpy as np
+from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
@@ -30,166 +40,165 @@ except ImportError:
 
 
 class TOHA(BaseBaseline):
-    """TOHA baseline for hallucination detection.
+    """TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025).
 
     Computes MTopDiv (Manifold Topology Divergence) on attention graphs
     using persistent homology. For each attention head, transforms attention
-    weights to distances, zeroes out prompt-to-prompt subgraph, computes
-    H_0 barcode via Vietoris-Rips, and sums finite barcode lengths.
+    weights to distance matrices, zeroes out prompt-to-prompt subgraph,
+    computes H_0 barcode via Vietoris-Rips, and sums finite barcode lengths.
 
-    In supervised mode, fits LogisticRegression on per-head MTopDiv scores.
-    In unsupervised mode, averages MTopDiv across all heads.
+    Has two modes:
+    - "supervised": Select top-K heads via ANOVA F-value, then fit
+      LogisticRegression on those head scores (per the paper).
+    - "unsupervised": Select heads by difference-in-means between
+      hallucinated and factual samples. Score = mean of selected head
+      MTopDiv values (per the paper).
 
     Args:
-        mode: "supervised" (fit head selection + LR) or "unsupervised"
-            (average all heads). Default "supervised".
-        n_top_heads: Number of top heads to select in supervised mode.
-            If None, uses all heads. Default None.
-        zero_out: "prompt" or "response" — which subgraph to zero out.
-            Per the paper, "prompt" isolates response topology.
+        mode: "supervised" or "unsupervised". Default "supervised".
+        n_max: Maximum number of heads to select. Default 6 (paper default).
+        select_method: Feature selection method for supervised mode.
+            "f_classif" (ANOVA F-value) or "mutual_info_classif".
+            Default "f_classif".
+        zero_out: "prompt" — zero out prompt-to-prompt distances,
+            isolating response topology (paper uses this).
+            "response" — zero out response-to-response distances.
             Default "prompt".
-        normalize_by_length: Whether to divide MTopDiv by response length.
-            Default True (matches paper).
-        handle_nan: If True, replace inf/nan values with 0. Default True.
+        normalize_by_length: Divide MTopDiv by response length.
+            Default True.
+        handle_nan: Replace inf/nan with 0. Default True.
     """
 
-    def __init__(self, mode="supervised", n_top_heads=None,
+    def __init__(self, mode="supervised", n_max=6,
+                 select_method="f_classif",
                  zero_out="prompt", normalize_by_length=True,
                  handle_nan=True):
         self.mode = mode
-        self.n_top_heads = n_top_heads
+        self.n_max = n_max
+        self.select_method = select_method
         self.zero_out = zero_out
         self.normalize_by_length = normalize_by_length
         self.handle_nan = handle_nan
 
         self.clf_ = None
-        self.head_weights_ = None
-        self.selected_heads_ = None
-        self.threshold_ = 0.5
+        self.selected_heads_ = []
         self.n_layers_ = None
         self.n_heads_ = None
+        self.is_fitted_ = False
+        self.threshold_ = 0.5
 
     def _safe_replace(self, arr, fill_value=0.0):
-        """Replace non-finite values with fill_value."""
         return np.where(np.isfinite(arr), arr, fill_value)
 
     @staticmethod
     def _attention_to_distance(attention_weights):
-        """Transform attention matrix to distance matrix.
+        """Transform attention matrix to distance matrix (paper Eq. 1).
 
-        Following the paper: d_ij = 1 - a_ij (clipped at 0),
-        zero diagonal, symmetrised via min(A, A^T).
+        d_ij = 1 - a_ij, clipped to [0, 1], zero diagonal, symmetrised
+        via min(A, A^T).
 
         Args:
             attention_weights: (n_tokens, n_tokens) attention matrix.
 
         Returns:
-            (n_tokens, n_tokens) distance matrix.
+            (n_tokens, n_tokens) symmetric distance matrix.
         """
-        attention_weights = attention_weights.astype(np.float32)
-        n_tokens = attention_weights.shape[-1]
+        attn = attention_weights.astype(np.float32)
+        n = attn.shape[-1]
 
-        # Distance = 1 - attention, clipped at 0
-        distance_mx = 1.0 - np.clip(attention_weights, a_min=0.0, a_max=None)
-
-        # Zero diagonal (no self-distance)
-        zero_diag = np.ones((n_tokens, n_tokens)) - np.eye(n_tokens)
-        distance_mx *= zero_diag
+        distance = 1.0 - np.clip(attn, a_min=0.0, a_max=None)
+        np.fill_diagonal(distance, 0.0)
 
         # Symmetrise: d_ij = min(d_ij, d_ji)
-        distance_mx = np.minimum(
-            np.swapaxes(distance_mx, -1, -2),
-            distance_mx,
-        )
-        return distance_mx
+        distance = np.minimum(distance, distance.T)
+
+        return distance
 
     @staticmethod
     def _compute_mtopdiv(distance_mx):
-        """Compute MTopDiv from distance matrix using persistent homology.
+        """Compute MTopDiv from distance matrix via persistent homology.
 
-        Computes H_0 barcode via Vietoris-Rips filtration and sums
-        finite barcode lengths (birth - death).
+        Uses ripser to compute H_0 persistent homology (connected components)
+        of the Vietoris-Rips filtration. Returns sum of finite barcode lengths.
+
+        Matches the official `transform_distances_to_mtopdiv` function.
 
         Args:
-            distance_mx: (n_tokens, n_tokens) symmetric distance matrix.
+            distance_mx: (n, n) symmetric distance matrix.
 
         Returns:
-            float: MTopDiv score (sum of finite H_0 barcode lengths).
+            Total finite H_0 barcode length (MTopDiv score).
         """
         if not _HAS_RIPSER:
-            raise ImportError(
-                "ripser is required for TOHA. Install with: pip install ripser"
-            )
+            raise ImportError("ripser required. Install: pip install ripser")
 
         barcodes = ripser(distance_mx, distance_matrix=True, maxdim=0)["dgms"]
         if len(barcodes) > 0 and len(barcodes[0]) > 1:
-            # Sum of finite barcode lengths (birth - death for finite deaths)
-            # barcodes[0] is H_0 diagram: [[birth, death], ...]
-            # Last entry is typically [0, inf) — skip it
-            finite_barcodes = barcodes[0][:-1]
-            if len(finite_barcodes) > 0:
-                lengths = finite_barcodes[:, 1] - finite_barcodes[:, 0]
-                return float(np.sum(lengths))
+            # H_0 barcodes: last entry is [0, inf), skip it
+            finite = barcodes[0][:-1]
+            if len(finite) > 0:
+                return float(np.sum(finite[:, 1] - finite[:, 0]))
         return 0.0
 
     @staticmethod
-    def _get_mtopdivs_for_sample(attns, prompt_len, response_len,
-                                  zero_out="prompt",
-                                  normalize_by_length=True):
-        """Compute MTopDiv for all heads in a single sample.
+    def _get_mtopdiv_sample(attn_tensor, prompt_len, zero_out="prompt",
+                             normalize_by_length=True):
+        """Compute MTopDiv for all heads in one sample.
+
+        Matches official `get_mtopdivs` logic.
 
         Args:
-            attns: (n_layers, n_heads, seq_len, seq_len) attention tensor.
-            prompt_len: Length of prompt portion.
-            response_len: Length of response portion.
+            attn_tensor: (n_layers, n_heads, seq_len, seq_len) attention.
+            prompt_len: Number of prompt tokens.
             zero_out: "prompt" or "response".
             normalize_by_length: Divide by response length.
 
         Returns:
             (n_layers * n_heads,) array of MTopDiv scores.
         """
-        n_layers, n_heads, seq_len, _ = attns.shape
+        n_layers, n_heads, seq_len, _ = attn_tensor.shape
+        response_len = seq_len - prompt_len
         n_total = n_layers * n_heads
-        mtopdivs = np.zeros(n_total)
+        scores = np.zeros(n_total)
 
         idx = 0
         for layer in range(n_layers):
             for head in range(n_heads):
-                attn_head = attns[layer, head]  # (seq_len, seq_len)
-                distance_mx = TOHA._attention_to_distance(attn_head)
+                attn = attn_tensor[layer, head]  # (seq_len, seq_len)
+                dist = TOHA._attention_to_distance(attn)
 
-                # Zero out the specified subgraph
+                # Zero out the specified subgraph (paper: prompt → zero)
                 if zero_out == "prompt":
-                    # Zero prompt-to-prompt distances
-                    prompt_end = prompt_len
-                    distance_mx[:prompt_end, :prompt_end] = 0.0
-                elif zero_out == "response":
-                    # Zero response-to-response distances
-                    resp_start = prompt_len
-                    distance_mx[resp_start:, resp_start:] = 0.0
+                    dist[:prompt_len, :prompt_len] = 0.0
 
-                mtopdiv = TOHA._compute_mtopdiv(distance_mx)
+                mtopdiv = TOHA._compute_mtopdiv(dist)
+
                 if normalize_by_length and response_len > 0:
                     mtopdiv /= response_len
-                mtopdivs[idx] = mtopdiv
+
+                scores[idx] = mtopdiv
                 idx += 1
 
-        return mtopdivs
+        return scores
 
     def fit(self, outputs, labels):
-        """Fit TOHA baseline.
+        """Fit the TOHA baseline.
 
-        In supervised mode: compute MTopDiv for all heads, select top
-        discriminative heads via AUROC, optionally fit LogisticRegression.
-        In unsupervised mode: simply store head weights uniformly.
+        For supervised mode:
+        1. Compute MTopDiv for all heads.
+        2. Use SelectKBest (ANOVA F-value) to select top-n heads.
+        3. Fit LogisticRegression on selected head features.
+
+        For unsupervised mode:
+        1. Compute MTopDiv for all heads.
+        2. Select heads by difference-of-means between classes.
+        3. Score = mean MTopDiv of selected heads (no classifier).
 
         Args:
-            outputs: Dict with 'attentions' tensor of shape
-                (batch_size, n_layers, n_heads, seq_len, seq_len).
-                May also contain 'input_ids' and 'sequences' for prompt
-                length detection.
-            labels: Binary hallucination labels. Can be per-answer (B,)
-                or per-token (B, seq_len). Answer-level used for scoring.
+            outputs: Dict with 'attentions'
+                (B, n_layers, n_heads, seq_len, seq_len).
+                May contain 'input_ids' and 'sequences' for prompt length.
+            labels: Binary hallucination labels (B,).
         """
         attentions = outputs['attentions']
         B, n_layers, n_heads, seq_len, _ = attentions.shape
@@ -197,7 +206,7 @@ class TOHA(BaseBaseline):
         self.n_heads_ = n_heads
 
         # Determine prompt length per sample
-        prompt_lens = np.zeros(B, dtype=int)
+        prompt_lens = np.full(B, seq_len // 2, dtype=int)
         if 'input_ids' in outputs and 'sequences' in outputs:
             from moeuncert.experiments.utils import find_generation_boundaries
             for b in range(B):
@@ -205,151 +214,24 @@ class TOHA(BaseBaseline):
                     outputs['input_ids'][b],
                     outputs['sequences'][b],
                 )
-                prompt_lens[b] = gs if gs > 0 else seq_len // 2
-        else:
-            prompt_lens = np.full(B, seq_len // 2, dtype=int)
+                if gs > 0:
+                    prompt_lens[b] = gs
 
-        response_lens = seq_len - prompt_lens
-
-        # Compute MTopDiv for all heads, all samples
-        all_features = np.zeros((B, n_layers * n_heads))
-        for b in range(B):
-            attn_array = attentions[b]
-            if hasattr(attn_array, 'detach'):
-                attn_array = attn_array.detach().cpu().numpy()
-            plen = int(prompt_lens[b])
-            rlen = int(response_lens[b])
-            all_features[b] = self._get_mtopdivs_for_sample(
-                attn_array, plen, rlen,
-                zero_out=self.zero_out,
-                normalize_by_length=self.normalize_by_length,
-            )
-
-        if self.handle_nan:
-            all_features = self._safe_replace(all_features, fill_value=0.0)
-
-        # Handle labels (answer-level)
+        # Labels: answer-level
         labels = np.asarray(labels, dtype=int)
-        if labels.ndim == 2:
-            # Per-token: aggregate to answer-level
-            labels = labels.max(axis=1)
-        elif labels.ndim == 1 and len(labels) != B:
-            if len(labels) == B * seq_len:
-                labels = labels.reshape(B, seq_len).max(axis=1)
-            else:
-                raise ValueError(
-                    f"Labels length {len(labels)} doesn't match batch size {B}"
-                )
-
-        # Head selection via AUROC (supervised)
-        if self.mode == "supervised":
-            head_auroc = np.zeros(n_layers * n_heads)
-            for h in range(n_layers * n_heads):
-                scores = all_features[:, h]
-                if len(np.unique(labels)) > 1 and len(np.unique(scores)) > 1:
-                    try:
-                        head_auroc[h] = abs(roc_auc_score(labels, scores) - 0.5) * 2
-                    except Exception:
-                        head_auroc[h] = 0.0
-
-            # Select top heads
-            if self.n_top_heads is not None and self.n_top_heads < len(head_auroc):
-                top_indices = np.argsort(head_auroc)[-self.n_top_heads:]
-                weights = np.zeros_like(head_auroc)
-                weights[top_indices] = head_auroc[top_indices]
-                if weights.sum() > 0:
-                    weights = weights / weights.sum()
-                self.head_weights_ = weights
-                self.selected_heads_ = [
-                    (int(idx) // n_heads, int(idx) % n_heads)
-                    for idx in top_indices
-                ]
-            else:
-                weights = head_auroc.copy()
-                if weights.sum() > 0:
-                    weights = weights / weights.sum()
-                self.head_weights_ = weights
-                self.selected_heads_ = [
-                    (l, h) for l in range(n_layers)
-                    for h in range(n_heads)
-                ]
-
-            # Fit LogisticRegression on selected head features
-            if len(self.selected_heads_) > 0:
-                selected_features = all_features[:, self.head_weights_ > 0]
-                if selected_features.shape[1] > 0:
-                    self.clf_ = LogisticRegression(max_iter=1000)
-                    self.clf_.fit(selected_features, labels)
-        else:
-            # Unsupervised: uniform weights
-            self.head_weights_ = np.ones(n_layers * n_heads) / (n_layers * n_heads)
-            self.selected_heads_ = [
-                (l, h) for l in range(n_layers)
-                for h in range(n_heads)
-            ]
-
-        # Find optimal threshold
-        if self.mode == "supervised" and self.clf_ is not None:
-            selected_features = all_features[:, self.head_weights_ > 0]
-            if selected_features.shape[1] > 0:
-                train_scores = self.clf_.predict_proba(selected_features)[:, 1]
-            else:
-                train_scores = all_features @ self.head_weights_
-        else:
-            train_scores = all_features @ self.head_weights_
-
-        from moeuncert.experiments.utils import optimal_threshold
-        best_thresh, best_f1 = optimal_threshold(labels, train_scores)
-        self.threshold_ = best_thresh
-
-        print(
-            f"  [TOHA] fit complete: {n_layers} layers × {n_heads} heads, "
-            f"{len(self.selected_heads_)} selected, mode={self.mode}"
-        )
-        print(f"  [TOHA] optimal threshold: {best_thresh:.4f} (F1: {best_f1:.4f})")
-
-    def predict_proba(self, outputs):
-        """Predict uncertainty scores.
-
-        Args:
-            outputs: Dict with 'attentions' tensor of shape
-                (batch_size, n_layers, n_heads, seq_len, seq_len).
-
-        Returns:
-            (batch_size,) array of uncertainty scores (higher = more
-            likely hallucinated).
-        """
-        if self.head_weights_ is None:
-            raise RuntimeError("TOHA not fitted yet. Call fit() first.")
-
-        attentions = outputs['attentions']
-        B, n_layers, n_heads, seq_len, _ = attentions.shape
-
-        # Determine prompt length
-        prompt_lens = np.zeros(B, dtype=int)
-        if 'input_ids' in outputs and 'sequences' in outputs:
-            from moeuncert.experiments.utils import find_generation_boundaries
-            for b in range(B):
-                gs, _ = find_generation_boundaries(
-                    outputs['input_ids'][b],
-                    outputs['sequences'][b],
-                )
-                prompt_lens[b] = gs if gs > 0 else seq_len // 2
-        else:
-            prompt_lens = np.full(B, seq_len // 2, dtype=int)
-
-        response_lens = seq_len - prompt_lens
+        if labels.ndim > 1:
+            labels = labels.ravel()
+        if len(labels) != B:
+            raise ValueError(f"Expected {B} labels, got {len(labels)}")
 
         # Compute MTopDiv for all heads
         all_features = np.zeros((B, n_layers * n_heads))
         for b in range(B):
-            attn_array = attentions[b]
-            if hasattr(attn_array, 'detach'):
-                attn_array = attn_array.detach().cpu().numpy()
-            plen = int(prompt_lens[b])
-            rlen = int(response_lens[b])
-            all_features[b] = self._get_mtopdivs_for_sample(
-                attn_array, plen, rlen,
+            attn_arr = attentions[b]
+            if hasattr(attn_arr, 'detach'):
+                attn_arr = attn_arr.detach().cpu().numpy()
+            all_features[b] = self._get_mtopdiv_sample(
+                attn_arr, int(prompt_lens[b]),
                 zero_out=self.zero_out,
                 normalize_by_length=self.normalize_by_length,
             )
@@ -357,27 +239,159 @@ class TOHA(BaseBaseline):
         if self.handle_nan:
             all_features = self._safe_replace(all_features, fill_value=0.0)
 
-        # Predict using selected heads
-        if self.mode == "supervised" and self.clf_ is not None:
-            selected_features = all_features[:, self.head_weights_ > 0]
-            if selected_features.shape[1] == 0:
-                # Fallback to weighted average
-                scores = all_features @ self.head_weights_
+        head_names = [f"{l}_{h}" for l in range(n_layers) for h in range(n_heads)]
+
+        if self.mode == "supervised":
+            if len(np.unique(labels)) < 2:
+                # Single class — fallback to uniform averaging
+                self.selected_heads_ = list(range(n_layers * n_heads))
+                self.clf_ = LogisticRegression(max_iter=1000)
+                self.clf_.fit(all_features, labels)
             else:
-                scores = self.clf_.predict_proba(selected_features)[:, 1]
+                # Select heads using ANOVA F-value (matching official code)
+                best_auc = 0
+                best_n = 1
+                best_feature_indices = list(range(min(self.n_max, n_layers * n_heads)))
+
+                for n in range(1, min(self.n_max, n_layers * n_heads) + 1):
+                    selector = SelectKBest(
+                        score_func=f_classif,
+                        k=n,
+                    )
+                    selector.fit(all_features, labels)
+                    selected = all_features[:, selector.get_support()]
+
+                    clf = LogisticRegression(max_iter=1000)
+                    clf.fit(selected, labels)
+
+                    try:
+                        preds = clf.predict_proba(selected)[:, 1]
+                        auc = roc_auc_score(labels, preds)
+                    except Exception:
+                        auc = 0
+
+                    if auc > best_auc:
+                        best_auc = auc
+                        best_n = n
+                        best_feature_indices = np.where(selector.get_support())[0]
+
+                # Re-fit with best n
+                selector = SelectKBest(score_func=f_classif, k=best_n)
+                selector.fit(all_features, labels)
+                best_feature_indices = np.where(selector.get_support())[0]
+
+                self.selected_heads_ = list(best_feature_indices)
+                self.clf_ = LogisticRegression(max_iter=1000)
+                self.clf_.fit(
+                    all_features[:, best_feature_indices],
+                    labels,
+                )
+
         else:
-            scores = all_features @ self.head_weights_
+            # Unsupervised mode
+            if len(np.unique(labels)) >= 2:
+                hal_mean = all_features[labels == 1].mean(axis=0)
+                fact_mean = all_features[labels == 0].mean(axis=0)
+                diff = np.abs(hal_mean - fact_mean)
+            else:
+                # No labels available — use variance across samples
+                diff = all_features.std(axis=0)
 
-        return scores
+            # Greedily select best heads (paper's greedy approach)
+            selected = []
+            remaining = list(range(n_layers * n_heads))
+            best_auc = 0
 
-    def predict(self, outputs):
-        """Predict binary hallucination labels.
+            heads_by_diff = np.argsort(diff)[::-1]
+
+            for n in range(1, min(self.n_max, len(heads_by_diff)) + 1):
+                candidate_heads = heads_by_diff[:n]
+                scores = all_features[:, candidate_heads].mean(axis=1)
+
+                if len(np.unique(labels)) >= 2:
+                    try:
+                        auc = roc_auc_score(labels, scores)
+                    except Exception:
+                        auc = 0
+                else:
+                    auc = 0
+
+                if auc >= best_auc:
+                    best_auc = auc
+                    selected = list(candidate_heads)
+
+            self.selected_heads_ = selected
+
+        # Find optimal threshold
+        train_scores = self.predict_proba(outputs)
+        from moeuncert.experiments.utils import optimal_threshold
+        best_thresh, best_f1 = optimal_threshold(labels, train_scores)
+        self.threshold_ = best_thresh
+
+        self.is_fitted_ = True
+
+        print(f"  [TOHA] fit: {len(self.selected_heads_)}/{n_layers*n_heads} heads "
+              f"selected, mode={self.mode}, "
+              f"threshold={best_thresh:.4f} F1={best_f1:.4f}")
+
+    def predict_proba(self, outputs):
+        """Predict uncertainty scores.
+
+        Higher = more uncertain / more likely hallucinated.
+
+        For supervised: LogisticRegression predict_proba on selected heads.
+        For unsupervised: mean MTopDiv of selected heads.
 
         Args:
             outputs: Dict with 'attentions' tensor.
 
         Returns:
-            (batch_size,) array of binary labels.
+            (B,) array of uncertainty scores.
         """
+        if not self.is_fitted_:
+            raise RuntimeError("Not fitted. Call fit() first.")
+
+        attentions = outputs['attentions']
+        B, n_layers, n_heads, seq_len, _ = attentions.shape
+
+        prompt_lens = np.full(B, seq_len // 2, dtype=int)
+        if 'input_ids' in outputs and 'sequences' in outputs:
+            from moeuncert.experiments.utils import find_generation_boundaries
+            for b in range(B):
+                gs, _ = find_generation_boundaries(
+                    outputs['input_ids'][b],
+                    outputs['sequences'][b],
+                )
+                if gs > 0:
+                    prompt_lens[b] = gs
+
+        all_features = np.zeros((B, n_layers * n_heads))
+        for b in range(B):
+            attn_arr = attentions[b]
+            if hasattr(attn_arr, 'detach'):
+                attn_arr = attn_arr.detach().cpu().numpy()
+            all_features[b] = self._get_mtopdiv_sample(
+                attn_arr, int(prompt_lens[b]),
+                zero_out=self.zero_out,
+                normalize_by_length=self.normalize_by_length,
+            )
+
+        if self.handle_nan:
+            all_features = self._safe_replace(all_features, fill_value=0.0)
+
+        selected = all_features[:, self.selected_heads_]
+        if selected.shape[1] == 0:
+            # Fallback: all heads
+            selected = all_features
+
+        if self.mode == "supervised" and self.clf_ is not None:
+            if selected.shape[1] > 0:
+                return self.clf_.predict_proba(selected)[:, 1]
+            return all_features.mean(axis=1)
+        else:
+            return selected.mean(axis=1)
+
+    def predict(self, outputs):
+        """Predict binary labels (0=factual, 1=hallucinated)."""
         scores = self.predict_proba(outputs)
         return (scores >= self.threshold_).astype(int)

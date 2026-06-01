@@ -510,27 +510,27 @@ def fit_token_mahalanobis(
     outputs: Dict[str, torch.Tensor],
     labels_df: pd.DataFrame,
     aggregation: str = "mean",
-    n_components: Optional[int] = None,
+    use_huq: bool = True,
     alpha: float = 1.0,
 ) -> Dict[str, Any]:
     """Fit TokenMahalanobis baseline and return threshold.
 
-    Extracts hidden states from multiple layers, computes MD per token
-    per layer, reduces with PCA, trains a Ridge regression, and finds
-    the optimal threshold for answer-level predictions.
+    Faithful re-implementation of Vazhentsev et al. (NAACL 2025):
+    computes per-layer MD from hidden states, trains Ridge on
+    sequence-level MD features, optionally combines with MSP via HUQ.
 
     Args:
         outputs: Dict with 'hidden_states' tensor
             (B, seq_len, n_layers, hidden_size).
         labels_df: Labeled dataframe with hallucination labels.
         aggregation: 'mean' or 'max' for answer-level aggregation.
-        n_components: PCA components (default: min(n_layers, 10)).
+        use_huq: If True, use HUQ two-stage ranking (MD + MSP).
         alpha: Ridge regularization strength.
 
     Returns:
         Dict with threshold, aggregation, and AUROC.
     """
-    print(f"\n--- TokenMahalanobis (aggregation={aggregation}) ---")
+    print(f"\n--- TokenMahalanobis (aggregation={aggregation}, huq={use_huq}) ---")
 
     from moeuncert.baselines.token_mahalanobis import TokenMahalanobis
 
@@ -556,11 +556,7 @@ def fit_token_mahalanobis(
         label_keys = label_qids
     qid_to_label = dict(zip(label_keys, labels))
 
-    # Prepare per-sample labels and features
-    # For each sample, compute answer-level MD, then match to labels
-    # We'll fit per-token on training data, then aggregate to answer for threshold
-
-    # Build target labels: per-token, repeat answer label for each token
+    # Build per-token labels (repeat answer label for each token)
     token_labels_list = []
     for i in range(B):
         qid = qids[i]
@@ -568,44 +564,38 @@ def fit_token_mahalanobis(
         token_labels_list.append(np.full(seq_len, label, dtype=int))
     token_labels = np.concatenate(token_labels_list)
 
-    # Filter out unlabeled tokens
     valid_mask = token_labels >= 0
     if valid_mask.sum() == 0:
         print("  WARNING: No labeled tokens found for TokenMahalanobis.")
         return {"threshold": None, "note": "No labeled data"}
 
-    # Fit the baseline
-    fit_outputs = {
-        'hidden_states': hidden_states,
-    }
+    fit_outputs = {'hidden_states': hidden_states}
     if 'scores' in outputs:
         fit_outputs['scores'] = outputs['scores']
 
     baseline = TokenMahalanobis(
-        n_components=n_components or min(n_layers, 10),
         alpha=alpha,
-        use_logprob=('scores' in outputs),
+        positive=True,
+        use_huq=use_huq,
     )
     baseline.fit(fit_outputs, token_labels)
 
-    # Predict and aggregate to answer level
-    token_scores = baseline.predict_proba(fit_outputs)  # (B, seq_len)
-    token_scores_flat = token_scores.ravel()
+    # Predict answer-level scores
+    scores = baseline.predict_proba(fit_outputs)  # (B,)
 
-    # Filter valid tokens only
-    valid_token_scores = token_scores_flat[valid_mask]
-    valid_token_qids = np.repeat(qids, seq_len)[valid_mask]
+    # Match to labels
+    matched_labels = np.array([qid_to_label[qid] for qid in qids])
+    valid_answers = matched_labels >= 0
 
-    unique_qids, agg_scores = aggregate_token_to_answer(
-        valid_token_scores, valid_token_qids, aggregation=aggregation
-    )
+    if valid_answers.sum() == 0:
+        return {"threshold": 0.5, "note": "No labeled answers"}
 
-    matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
+    threshold, f1 = optimal_threshold(matched_labels[valid_answers],
+                                       scores[valid_answers])
 
-    threshold, f1 = optimal_threshold(matched_labels, agg_scores)
-
-    if len(np.unique(matched_labels)) > 1:
-        auroc = roc_auc_score(matched_labels, agg_scores)
+    if len(np.unique(matched_labels[valid_answers])) > 1:
+        auroc = roc_auc_score(matched_labels[valid_answers],
+                              scores[valid_answers])
     else:
         auroc = 0.5
 
@@ -615,7 +605,7 @@ def fit_token_mahalanobis(
         "threshold": float(threshold),
         "aggregation": aggregation,
         "auroc": float(auroc),
-        "n_components": baseline.pca.n_components_,
+        "use_huq": use_huq,
     }
 
 
@@ -679,12 +669,10 @@ def fit_toha(
         fit_outputs['input_ids'] = outputs['input_ids']
         fit_outputs['sequences'] = outputs['sequences']
 
-    baseline = TOHA(agg='mean', n_top_heads=n_top_heads)
+    baseline = TOHA(mode="supervised", n_max=n_top_heads)
     baseline.fit(fit_outputs, sample_labels[valid_mask])
 
-    # Predict on all (including validation samples within fit)
-    # Re-fit on all valid data after threshold tuning
-    # The fit() already uses all data and finds a threshold
+    # Predict on all
     scores = baseline.predict_proba(fit_outputs)  # (B,)
     scores = np.asarray(scores)
     matched_labels = sample_labels[valid_mask]
