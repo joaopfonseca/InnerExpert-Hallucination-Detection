@@ -28,6 +28,7 @@ export RETURN_BASELINE_FEATURES="--return-baseline-features"
 
 # --- DATA SPLIT ---------------------------------------------------------------
 export TRAIN_YEARS=(2024 2025)
+export TRAIN_MONTH=""      # empty = all months; e.g. 1 for January only
 export TEST_YEARS=(2026)
 export TEST_MONTH=""       # empty = all months; e.g. 1 for January only
 
