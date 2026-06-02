@@ -1,13 +1,13 @@
-#!/usr/bin/env bash
+##!/usr/bin/env bash
 # ============================================================================
-# Quick pipeline: train on 2025, test OOD on January 2026.
-#
-# A faster variant of run_pipeline.sh for rapid iteration.
-# Uses a single training year instead of 2022-2025.
+# End-to-end pipeline runner for MoE Uncertainty Estimation experiments
 #
 # Usage:
-#   chmod +x run_pipeline_quick.sh
-#   ./run_pipeline_quick.sh
+#   chmod +x run_pipeline.sh
+#   ./run_pipeline.sh
+#
+# Override variables:
+#   MODEL="mistralai/Mixtral-8x7B-Instruct-v0.1" ./run_pipeline.sh
 # ============================================================================
 
 set -euo pipefail
