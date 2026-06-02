@@ -25,6 +25,8 @@
 - [x] LLM-Check (Mitchell et al., 2023 - internal signal baseline; natural ablation point)
 - [x] Semantic Energy (Ma et al., 2025 - logit-space energy, improves over semantic entropy)
 - [x] HaluNet (Tong et al., 2025 - trainable upper bound)
+- [x] Token-Level Mahalanobis Distance (Vazhentsev et al., 2025 - density-based)
+- [x] TOHA (Bazarova et al., 2025 - topology-based)
 
 ## Evaluation Metrics
 

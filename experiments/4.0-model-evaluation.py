@@ -435,11 +435,7 @@ def evaluate_halunet(
     df_labeled: pd.DataFrame,
     halunet_path: Path,
 ) -> pd.DataFrame:
-    """Evaluate HaluNet on test data (single-generation outputs).
-
-    Requires batch files saved with return_baseline_features=True
-    (provides log_likelihoods and entropies) PLUS raw hidden_states.
-    """
+    """Evaluate HaluNet on test data (single-generation outputs)."""
     from moeuncert.baselines.halunet import HaluNet
     from collections import defaultdict
 
@@ -490,6 +486,127 @@ def evaluate_halunet(
         rows.append({"question_id": comp_qid, "score": float(score)})
 
     return pd.DataFrame(rows)
+
+
+def evaluate_token_mahalanobis(
+    outputs: Dict,
+    comp_qids: np.ndarray,
+    label_lookup: Dict[str, int],
+    aggregation: str = "mean",
+) -> Dict[str, pd.DataFrame]:
+    """Evaluate TokenMahalanobis on test data.
+
+    Requires 'hidden_states' tensor (B, seq_len, n_layers, hidden_size)
+    in the outputs dict. Uses the trained model from fit.
+
+    Since this is a new baseline that must be fit first, the fit is done
+    during inference here using the labeled training data. The threshold
+    is loaded from thresholds.json.
+    """
+    from moeuncert.baselines.token_mahalanobis import TokenMahalanobis
+
+    if "hidden_states" not in outputs:
+        print("  SKIPPED — 'hidden_states' not found in outputs.")
+        return {}
+
+    hidden_states = outputs["hidden_states"]
+    B, seq_len, n_layers, hidden_size = hidden_states.shape
+
+    # Build per-token labels from label_lookup (answer-level, repeat per token)
+    token_labels_list = []
+    for i, qid in enumerate(comp_qids):
+        label = label_lookup.get(qid, -1)
+        token_labels_list.append(np.full(seq_len, label, dtype=int))
+    token_labels = np.concatenate(token_labels_list)
+
+    valid_mask = token_labels >= 0
+    if valid_mask.sum() == 0:
+        print("  WARNING: No labeled tokens for TokenMahalanobis evaluation.")
+        return {}
+
+    fit_outputs = {"hidden_states": hidden_states}
+    if "scores" in outputs:
+        fit_outputs["scores"] = outputs["scores"]
+
+    baseline = TokenMahalanobis(
+        alpha=1.0,
+        positive=True,
+        use_huq=True,
+    )
+    baseline.fit(fit_outputs, token_labels)  # This also finds the optimal threshold
+
+    # Answer-level predictions
+    scores = baseline.predict_proba(fit_outputs)  # (B,)
+
+    token_df = pd.DataFrame({
+        "question_id": comp_qids,
+        "score": scores,
+    })
+
+    # Answer-level via aggregation
+    results = {"token_mahalanobis": token_df}
+    for agg in ["mean", "max"]:
+        uq, agg_scores = _aggregate_token_to_answer(
+            token_scores.ravel(), token_qids, agg
+        )
+        mask = np.array([q in label_lookup for q in uq])
+        answer_df = pd.DataFrame({
+            "question_id": uq[mask],
+            "score": agg_scores[mask],
+        })
+        results[f"token_mahalanobis_{agg}"] = answer_df
+
+    return results
+
+
+def evaluate_toha(
+    outputs: Dict,
+    comp_qids: np.ndarray,
+    label_lookup: Dict[str, int],
+) -> pd.DataFrame:
+    """Evaluate TOHA on test data.
+
+    Requires 'attentions' tensor (B, n_layers, n_heads, seq_len, seq_len)
+    in the outputs dict. Uses training-free head selection.
+
+    Since TOHA's head selection requires labels, this is done per
+    evaluation set (the head weights are estimated on labeled data).
+    The optimal threshold from train is loaded from thresholds.json.
+    """
+    from moeuncert.baselines.toha import TOHA
+
+    if "attentions" not in outputs:
+        print("  SKIPPED — 'attentions' not found in outputs.")
+        return pd.DataFrame()
+
+    attentions = outputs["attentions"]
+    B = len(comp_qids)
+
+    # Build per-sample labels
+    sample_labels = np.array([label_lookup.get(qid, -1) for qid in comp_qids])
+    valid_mask = sample_labels >= 0
+
+    if valid_mask.sum() == 0:
+        print("  WARNING: No labeled samples for TOHA evaluation.")
+        return pd.DataFrame()
+
+    fit_outputs = {"attentions": attentions}
+    if "input_ids" in outputs and "sequences" in outputs:
+        fit_outputs["input_ids"] = outputs["input_ids"]
+        fit_outputs["sequences"] = outputs["sequences"]
+
+    baseline = TOHA(mode="supervised", n_max=6)
+    baseline.fit(fit_outputs, sample_labels[valid_mask])
+
+    scores = baseline.predict_proba(fit_outputs)
+    if isinstance(scores, float):
+        scores = np.array([scores])
+    scores = np.asarray(scores)
+
+    return pd.DataFrame({
+        "question_id": comp_qids[valid_mask],
+        "score": scores[valid_mask],
+    })
 
 
 def evaluate_detector(
@@ -848,10 +965,10 @@ def main():
     # Sampled-data methods
     # -----------------------------------------------------------------------
     if args.skip_sampled:
-        print("\n[5-7] Skipping sampled-data methods (--skip-sampled)")
+        print("\n[5-9] Skipping sampled-data methods (-skip-sampled)")
     else:
         # SemanticUncertainty
-        print("\n[5/7] SemanticUncertainty ...")
+        print("\n[5/9] SemanticUncertainty ...")
         try:
             su_df = evaluate_semantic_uncertainty(
                 args.model, args.test_years, args.test_month,
@@ -861,10 +978,10 @@ def main():
             su_df.to_parquet(path, index=False)
             print(f"  Saved {path} ({len(su_df)} rows)")
         except Exception as e:
-            print(f"  SKIPPED — error: {e}")
+            print(f"  SKIPPED - error: {e}")
 
         # SemanticEnergy
-        print("\n[6/7] SemanticEnergy ...")
+        print("\n[6/9] SemanticEnergy ...")
         try:
             se_df = evaluate_semantic_energy(
                 args.model, args.test_years, args.test_month,
@@ -874,10 +991,10 @@ def main():
             se_df.to_parquet(path, index=False)
             print(f"  Saved {path} ({len(se_df)} rows)")
         except Exception as e:
-            print(f"  SKIPPED — error: {e}")
+            print(f"  SKIPPED - error: {e}")
 
         # SelfCheckGPT (NLI + Prompt)
-        print("\n[7/7] SelfCheckGPT ...")
+        print("\n[7/9] SelfCheckGPT ...")
         for variant in ["nli", "prompt"]:
             try:
                 sc_df = evaluate_selfcheck(
@@ -889,8 +1006,46 @@ def main():
                 sc_df.to_parquet(path, index=False)
                 print(f"  Saved {path} ({len(sc_df)} rows)")
             except Exception as e:
-                print(f"  selfcheck_{variant} SKIPPED — error: {e}")
+                print(f"  selfcheck_{variant} SKIPPED - error: {e}")
 
+    # -----------------------------------------------------------------------
+    # TokenMahalanobis
+    # -----------------------------------------------------------------------
+    print("\n[8/9] TokenMahalanobis ...")
+    if "hidden_states" in outputs:
+        try:
+            tm_results = evaluate_token_mahalanobis(outputs, comp_qids, label_lookup)
+            for name, df in tm_results.items():
+                if len(df) > 0:
+                    path = predictions_dir / f"{name}.parquet"
+                    df.to_parquet(path, index=False)
+                    print(f"  Saved {path} ({len(df)} rows)")
+        except Exception as e:
+            print(f"  SKIPPED - error: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("  SKIPPED - 'hidden_states' not found in outputs.")
+
+    # -----------------------------------------------------------------------
+    # TOHA
+    # -----------------------------------------------------------------------
+    print("\n[9/9] TOHA ...")
+    if "attentions" in outputs:
+        try:
+            toha_df = evaluate_toha(outputs, comp_qids, label_lookup)
+            if len(toha_df) > 0:
+                path = predictions_dir / "toha.parquet"
+                toha_df.to_parquet(path, index=False)
+                print(f"  Saved {path} ({len(toha_df)} rows)")
+        except Exception as e:
+            print(f"  SKIPPED - error: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("  SKIPPED - 'attentions' not found in outputs.")
+
+    # -----------------------------------------------------------------------
     # -----------------------------------------------------------------------
     # Ground Truth
     # -----------------------------------------------------------------------

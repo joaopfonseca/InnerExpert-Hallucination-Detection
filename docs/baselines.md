@@ -98,6 +98,72 @@ Each branch produces a latent vector; branch outputs are fused via attention or 
 
 **Rhetorical purpose:** Trainable comparison — both our method and HaluNet are lightweight trainable classifiers. Can MoE signals improve over standard signals within the same training paradigm?
 
+### 7. Token-Level Mahalanobis Distance (Vazhentsev et al., 2025) — FAITHFUL IMPLEMENTATION
+
+A supervised density-based uncertainty quantification method adapted from classification OOD detection to text generation.
+
+**How it works (exact algorithm from the paper):**
+
+1. **Extract token embeddings** from specified decoder layer(s). The paper supports both single-layer and multi-layer variants.
+
+2. **Estimate density** on "correct/factual" training tokens only. For each layer, compute:
+   - **Class-conditional centroid**: mean embedding of all tokens labeled as factual (label=0).
+   - **Covariance matrix**: compute Σ = (X − μ)ᵀ (X − μ) / (n−1) where μ is the *known* centroid (not empirical mean — matching the official lm_polygraph implementation).
+   - **Regularized inverse**: invert with progressive jitter (1e-6 through 1.0) if singular, falling back to pseudoinverse.
+
+3. **Compute Mahalanobis distance** per token per layer for *all* tokens:
+   MD(x) = √( (x − μ)ᵀ Σ⁻¹ (x − μ) )
+
+4. **Sequence-level aggregation**: average MD scores across tokens within each answer to get a per-sequence MD feature.
+
+5. **Ridge regression** (with positive coefficient constraint) on sequence-level MD features against a quality score. The paper uses continuous metrics (F1, correctness) as targets, not binary labels.
+
+6. **HUQ two-stage combination** (Hybrid Uncertainty Quantization): When enabled, MD serves as the *epistemic* uncertainty signal, while Maximum Sequence Probability (MSP) serves as the *aleatoric* signal. These are combined via a ranking-based two-stage formula with parameters (t_min, t_max, α) learned via grid search on a held-out validation split.
+
+**Key details matching the paper's official implementation:**
+- Covariance centering uses the fixed centroid μ, not the empirical batch mean.
+- Progressive jitter sequence matches lm_polygraph: [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0].
+- Ridge with `positive=True` (coefficients constrained to be positive, as the paper found best).
+- HUQ grid search ranges: t_min ∈ [0.0, 0.3], t_max ∈ [0.7, 1.0], α ∈ [0.0, 1.0].
+
+**Paper:** Vazhentsev et al., "Token-Level Density-Based Uncertainty Quantification Methods for Eliciting Truthfulness of Large Language Models" (NAACL 2025, arXiv 2502.14427)
+**Code:** https://github.com/ArtemVazh/token_mahalanobis_distance
+
+**Rhetorical purpose:** Internal signal comparison — does MoE routing beat density-based uncertainty from hidden states?
+
+### 8. TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025) — FAITHFUL IMPLEMENTATION
+
+A fundamentally different approach that treats attention maps as weighted graphs and uses topological data analysis to detect hallucination. Completely orthogonal to both routing-based and probability-based methods.
+
+**How it works (exact algorithm from the paper):**
+
+1. **Build distance matrices**: For each attention head, transform the attention matrix A ∈ ℝ^(seq_len × seq_len) into a distance matrix: `d_ij = 1 − a_ij` (clipped to [0, 1]), zero the diagonal, and symmetrize via `min(d_ij, d_ji)`.
+
+2. **Zero out prompt subgraph**: Set all prompt-to-prompt distances to 0. This isolates the topological structure of the response tokens relative to the prompt. (The paper uses `zero_out="prompt"`; `zero_out="response"` is also supported.)
+
+3. **Compute MTopDiv via persistent homology**: Run Vietoris-Rips filtration using the `ripser` library on the distance matrix (max dimension 0, for connected components). Sum the finite H₀ barcode lengths (birth − death), excluding the infinite component `[0, ∞)`. This sum is the **MTopDiv** (Manifold Topology Divergence) score.
+
+4. **Normalize by response length**: Divide MTopDiv by the number of response tokens, matching the paper's default.
+
+5. **Supervised head selection**: Use `SelectKBest` with ANOVA F-value (`f_classif`) to select the top-n attention heads that best discriminate between hallucinated and factual samples. The paper searches n from 1 to n_max (default 6) and picks the one with highest validation AUROC.
+
+6. **Classification**: Train a `LogisticRegression` on the selected head MTopDiv features. Prediction = `predict_proba[:, 1]`.
+
+7. **Unsupervised mode**: Select heads by difference-of-means between hallucinated and factual MTopDiv scores. Score = mean MTopDiv across selected heads (no classifier).
+
+**Key properties:**
+- **Per-token:** NO (head-level, but maps to per-sample scores).
+- **Generations needed:** 1 (single-pass).
+- **Training required:** Minimal — supervised mode needs labeled examples for head selection; unsupervised mode needs only a few to estimate head ranking.
+- **Signals used:** Attention matrices (all layers, all heads).
+- **Computational efficiency:** O(seq_len² × n_heads × n_layers) for distance matrix + ripser O(n³) per head in worst case.
+- **Orthogonal signal:** Attention topology captures completely different structure from routing entropy or output probability.
+
+**Paper:** Bazarova et al., "Hallucination Detection in LLMs with Topological Divergence on Attention Graphs" (arXiv 2504.10063, 2025) — **ACL 2026**
+**Code:** https://github.com/sb-ai-lab/TOHA
+
+**Rhetorical purpose:** Orthogonal signal — does topology of attention capture uncertainty that routing and density miss?
+
 ## Excluded Baselines
 
 | Baseline | Reason for Exclusion |
@@ -116,4 +182,6 @@ Each branch produces a latent vector; branch outputs are fused via attention or 
 | LLM-Check | Internal signal | 1 | No | Hidden states, attention |
 | Semantic Energy | Internal signal | 1 | No | Penultimate logits + semantic clustering |
 | HaluNet | Trainable | 1 | Yes | Token probs, semantic embeddings, distributional uncertainty |
+| Token Mahalanobis | Density-based | 1 | Yes | Hidden states (multi-layer) |
+| TOHA | Topology-based | 1 | No | Attention matrices |
 | **Ours** | Internal signal (MoE) | 1 | No (optionally) | All of LLM-Check + routing entropy, expert similarity, expert usage, Gini, Herfindahl |

@@ -10,6 +10,8 @@ Baselines fitted:
 - LLM-Check: fits threshold + selects optimal layer per score type
 - SemanticUncertainty: fits threshold on semantic entropy (requires sampled data)
 - SemanticEnergy: fits threshold on energy scores (requires sampled data)
+- TokenMahalanobis: trains density model on hidden states + fits threshold
+- TOHA: trains head-selection model on attention matrices + fits threshold
 
 SelfCheckGPT requires no threshold fitting (pure inference).
 HaluNet is trained separately (3.2-train-halunet.py).
@@ -504,6 +506,195 @@ def fit_semantic_energy(
     }
 
 
+def fit_token_mahalanobis(
+    outputs: Dict[str, torch.Tensor],
+    labels_df: pd.DataFrame,
+    aggregation: str = "mean",
+    use_huq: bool = True,
+    alpha: float = 1.0,
+) -> Dict[str, Any]:
+    """Fit TokenMahalanobis baseline and return threshold.
+
+    Faithful re-implementation of Vazhentsev et al. (NAACL 2025):
+    computes per-layer MD from hidden states, trains Ridge on
+    sequence-level MD features, optionally combines with MSP via HUQ.
+
+    Args:
+        outputs: Dict with 'hidden_states' tensor
+            (B, seq_len, n_layers, hidden_size).
+        labels_df: Labeled dataframe with hallucination labels.
+        aggregation: 'mean' or 'max' for answer-level aggregation.
+        use_huq: If True, use HUQ two-stage ranking (MD + MSP).
+        alpha: Ridge regularization strength.
+
+    Returns:
+        Dict with threshold, aggregation, and AUROC.
+    """
+    print(f"\n--- TokenMahalanobis (aggregation={aggregation}, huq={use_huq}) ---")
+
+    from moeuncert.baselines.token_mahalanobis import TokenMahalanobis
+
+    raw_qids = np.asarray(outputs['question_id'])
+    ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
+    qids = np.array([f"{q}::{int(e)}" for q, e in zip(raw_qids, ev_flags)])
+
+    hidden_states = outputs['hidden_states']  # (B, seq_len, n_layers, hidden_size)
+    B, seq_len, n_layers, hidden_size = hidden_states.shape
+
+    # Build label lookup
+    label_qids, labels = extract_answer_level_labels(labels_df)
+    ev_col = next(
+        (c for c in ("evidence_present", "has_evidence", "with_evidence")
+         if c in labels_df.columns),
+        None,
+    )
+    if ev_col is not None:
+        label_keys = np.array(
+            [f"{q}::{int(e)}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+        )
+    else:
+        label_keys = label_qids
+    qid_to_label = dict(zip(label_keys, labels))
+
+    # Build per-token labels (repeat answer label for each token)
+    token_labels_list = []
+    for i in range(B):
+        qid = qids[i]
+        label = qid_to_label.get(qid, -1)
+        token_labels_list.append(np.full(seq_len, label, dtype=int))
+    token_labels = np.concatenate(token_labels_list)
+
+    valid_mask = token_labels >= 0
+    if valid_mask.sum() == 0:
+        print("  WARNING: No labeled tokens found for TokenMahalanobis.")
+        return {"threshold": None, "note": "No labeled data"}
+
+    fit_outputs = {'hidden_states': hidden_states}
+    if 'scores' in outputs:
+        fit_outputs['scores'] = outputs['scores']
+
+    baseline = TokenMahalanobis(
+        alpha=alpha,
+        positive=True,
+        use_huq=use_huq,
+    )
+    baseline.fit(fit_outputs, token_labels)
+
+    # Predict answer-level scores
+    scores = baseline.predict_proba(fit_outputs)  # (B,)
+
+    # Match to labels
+    matched_labels = np.array([qid_to_label[qid] for qid in qids])
+    valid_answers = matched_labels >= 0
+
+    if valid_answers.sum() == 0:
+        return {"threshold": 0.5, "note": "No labeled answers"}
+
+    threshold, f1 = optimal_threshold(matched_labels[valid_answers],
+                                       scores[valid_answers])
+
+    if len(np.unique(matched_labels[valid_answers])) > 1:
+        auroc = roc_auc_score(matched_labels[valid_answers],
+                              scores[valid_answers])
+    else:
+        auroc = 0.5
+
+    print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+
+    return {
+        "threshold": float(threshold),
+        "aggregation": aggregation,
+        "auroc": float(auroc),
+        "use_huq": use_huq,
+    }
+
+
+def fit_toha(
+    outputs: Dict[str, torch.Tensor],
+    labels_df: pd.DataFrame,
+    n_top_heads: int = 10,
+) -> Dict[str, Any]:
+    """Fit TOHA baseline and return threshold.
+
+    Extracts attention matrices, computes topological features per head,
+    selects heads that best discriminate hallucination, and finds the
+    optimal threshold for answer-level predictions.
+
+    Args:
+        outputs: Dict with 'attentions' tensor
+            (B, n_layers, n_heads, seq_len, seq_len).
+        labels_df: Labeled dataframe with hallucination labels.
+        n_top_heads: Number of top attention heads to select.
+
+    Returns:
+        Dict with threshold, n_selected_heads, and AUROC.
+    """
+    print(f"\n--- TOHA (n_top_heads={n_top_heads}) ---")
+
+    from moeuncert.baselines.toha import TOHA
+
+    raw_qids = np.asarray(outputs['question_id'])
+    ev_flags = np.asarray(outputs.get('evidence_present', [False] * len(raw_qids)))
+    qids = np.array([f"{q}::{int(e)}" for q, e in zip(raw_qids, ev_flags)])
+
+    # Build label lookup
+    label_qids, labels = extract_answer_level_labels(labels_df)
+    ev_col = next(
+        (c for c in ("evidence_present", "has_evidence", "with_evidence")
+         if c in labels_df.columns),
+        None,
+    )
+    if ev_col is not None:
+        label_keys = np.array(
+            [f"{q}::{int(e)}" for q, e in zip(label_qids, labels_df[ev_col].values)]
+        )
+    else:
+        label_keys = label_qids
+    qid_to_label = dict(zip(label_keys, labels))
+
+    # Align labels with samples
+    B = len(raw_qids)
+    sample_labels = np.array([qid_to_label.get(qid, -1) for qid in qids])
+    valid_mask = sample_labels >= 0
+
+    if valid_mask.sum() == 0:
+        print("  WARNING: No labeled samples found for TOHA.")
+        return {"threshold": None, "note": "No labeled data"}
+
+    # Prepare fit outputs (may also need input_ids/sequences for prompt_len)
+    fit_outputs = {
+        'attentions': outputs['attentions'],
+    }
+    if 'input_ids' in outputs and 'sequences' in outputs:
+        fit_outputs['input_ids'] = outputs['input_ids']
+        fit_outputs['sequences'] = outputs['sequences']
+
+    baseline = TOHA(mode="supervised", n_max=n_top_heads)
+    baseline.fit(fit_outputs, sample_labels[valid_mask])
+
+    # Predict on all
+    scores = baseline.predict_proba(fit_outputs)  # (B,)
+    scores = np.asarray(scores)
+    matched_labels = sample_labels[valid_mask]
+    matched_scores = scores[valid_mask]
+
+    threshold, f1 = optimal_threshold(matched_labels, matched_scores)
+
+    if len(np.unique(matched_labels)) > 1:
+        auroc = roc_auc_score(matched_labels, matched_scores)
+    else:
+        auroc = 0.5
+
+    print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+
+    return {
+        "threshold": float(threshold),
+        "n_selected_heads": len(baseline.selected_heads_),
+        "auroc": float(auroc),
+        "n_top_heads": n_top_heads,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fit baseline thresholds on training data"
@@ -645,6 +836,17 @@ def main():
         temperature=getattr(args, 'temperature', 0.7),
     )
     
+    # TokenMahalanobis
+    for agg in args.aggregations:
+        thresholds[f"token_mahalanobis_{agg}"] = fit_token_mahalanobis(
+            outputs, df_labeled, aggregation=agg
+        )
+
+    # TOHA
+    thresholds["toha"] = fit_toha(
+        outputs, df_labeled
+    )
+
     # SelfCheckGPT: no threshold needed
     thresholds["selfcheck_nli"] = {"note": "No threshold needed (pure inference)"}
     thresholds["selfcheck_prompt"] = {"note": "No threshold needed (pure inference)"}

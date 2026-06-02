@@ -21,6 +21,8 @@ from .semantic_uncertainty import (
     logsumexp_by_id,
 )
 from .halunet import HaluNet
+from .token_mahalanobis import TokenMahalanobis
+from .toha import TOHA
 
 __all__ = [
     "BaseBaseline",
@@ -37,4 +39,6 @@ __all__ = [
     "semantic_ids_to_clusters",
     "logsumexp_by_id",
     "HaluNet",
+    "TokenMahalanobis",
+    "TOHA",
 ]
