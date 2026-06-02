@@ -87,6 +87,28 @@ Learns an uncertainty signal that is unconditional — it doesn't depend on spec
 
 **Paper:** *Unconditional Truthfulness: Learning Unconditional Uncertainty of Large Language Models* (EMNLP 2025)
 
+### Sequence-Level Internal-Signal Detectors (Cited but Not Evaluated)
+
+A second family of internal-signal methods produces only **per-response** hallucination scores, and requires materializing very large volumes of internal state to do so. We cite them in the related work and discuss what they contribute, but do **not** include them in our headline evaluation and do **not** ship implementations — the storage cost of running either of them at inference time is not feasible inside our test-time pipeline. See `docs/baselines.md` § *Cited but Not Evaluated Baselines* for the full rationale.
+
+#### Token-Level Mahalanobis Distance (Vazhentsev et al., NAACL 2025)
+
+Estimates a per-token Mahalanobis distance from a centroid and regularized inverse covariance estimated on a labelled set of "correct" training tokens, then **mean-pools across tokens within the response** to produce a single per-sequence score. A Ridge meta-model (with optional HUQ combination) is trained on these pooled scores against a continuous quality target. The method is the natural density-based counterpart to our MoE routing method: both are single-pass, single-generation, and operate on internal representations. However, evaluating it requires caching the per-layer hidden states of every generated token *and* the per-layer inverse covariance matrices at inference time, which is not feasible inside our lightweight test-time pipeline. The score is also inherently sequence-level (the mean-pool is the paper's core aggregation step), so it cannot localize hallucinations to specific tokens.
+
+**Paper:** *Token-Level Density-Based Uncertainty Quantification Methods for Eliciting Truthfulness of Large Language Models* (NAACL 2025, arXiv 2502.14427)
+**Code:** https://github.com/ArtemVazh/token_mahalanobis_distance
+
+**Comparison to our method.** Both are single-pass internal-signal detectors, but they differ in three structural ways that matter for the per-token detection setting we target: (1) Token Mahalanobis aggregates per-token scores into a single sequence-level score — we keep per-token scores, which enables token-level localization; (2) Token Mahalanobis needs the per-layer hidden states and per-layer inverse covariance matrices stored at inference, whereas MoE routing signals are a tiny side-channel of the standard forward pass; (3) Token Mahalanobis detects the same kind of uncertainty as embedding density, while we detect routing-time uncertainty — a structurally different signal that is available in MoE models and not in dense ones.
+
+#### TOHA (Bazarova et al., ACL 2026)
+
+Treats the attention matrix of every layer and head as the adjacency of a weighted graph, transforms it to a distance matrix, zeroes out the prompt–prompt subgraph to isolate the response subgraph, then runs Vietoris–Rips persistent homology (H₀) on the response subgraph to compute a single **MTopDiv** (Manifold Topology Divergence) score per head. A logistic regression (supervised) or difference-of-means (unsupervised) head-selection step yields one sequence-level hallucination score. The method is fully orthogonal to ours: it uses attention topology, where we use routing entropy and expert disagreement, and the two signals could in principle be combined.
+
+**Paper:** *Hallucination Detection in LLMs with Topological Divergence on Attention Graphs" (arXiv 2504.10063, 2025) — **ACL 2026**
+**Code:** https://github.com/sb-ai-lab/TOHA
+
+**Why we cite but do not evaluate it.** Two reasons. First, **storage cost**: TOHA requires the *full* attention matrices of all layers and heads (after symmetrization and the prompt–prompt zero-out), then runs persistent homology on the per-head response subgraph; this is a multi-gigabyte footprint per response on a typical MoE, which is incompatible with our lightweight test-time pipeline. Second, **no per-token signal**: MTopDiv is a property of the full response attention *graph* and there is no principled way to assign a per-token score from a persistent-homology computation on the full graph, so the method cannot be evaluated at the token level where our method naturally lives. We exclude it from the headline comparison for the same reason we exclude Token Mahalanobis.
+
 ---
 
 

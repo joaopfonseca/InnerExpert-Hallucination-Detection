@@ -98,71 +98,36 @@ Each branch produces a latent vector; branch outputs are fused via attention or 
 
 **Rhetorical purpose:** Trainable comparison — both our method and HaluNet are lightweight trainable classifiers. Can MoE signals improve over standard signals within the same training paradigm?
 
-### 7. Token-Level Mahalanobis Distance (Vazhentsev et al., 2025) — FAITHFUL IMPLEMENTATION
+### 7. Token-Level Mahalanobis Distance (Vazhentsev et al., 2025) — **NOT EVALUATED, NOT IN CODEBASE**
 
-A supervised density-based uncertainty quantification method adapted from classification OOD detection to text generation.
-
-**How it works (exact algorithm from the paper):**
-
-1. **Extract token embeddings** from specified decoder layer(s). The paper supports both single-layer and multi-layer variants.
-
-2. **Estimate density** on "correct/factual" training tokens only. For each layer, compute:
-   - **Class-conditional centroid**: mean embedding of all tokens labeled as factual (label=0).
-   - **Covariance matrix**: compute Σ = (X − μ)ᵀ (X − μ) / (n−1) where μ is the *known* centroid (not empirical mean — matching the official lm_polygraph implementation).
-   - **Regularized inverse**: invert with progressive jitter (1e-6 through 1.0) if singular, falling back to pseudoinverse.
-
-3. **Compute Mahalanobis distance** per token per layer for *all* tokens:
-   MD(x) = √( (x − μ)ᵀ Σ⁻¹ (x − μ) )
-
-4. **Sequence-level aggregation**: average MD scores across tokens within each answer to get a per-sequence MD feature.
-
-5. **Ridge regression** (with positive coefficient constraint) on sequence-level MD features against a quality score. The paper uses continuous metrics (F1, correctness) as targets, not binary labels.
-
-6. **HUQ two-stage combination** (Hybrid Uncertainty Quantization): When enabled, MD serves as the *epistemic* uncertainty signal, while Maximum Sequence Probability (MSP) serves as the *aleatoric* signal. These are combined via a ranking-based two-stage formula with parameters (t_min, t_max, α) learned via grid search on a held-out validation split.
-
-**Key details matching the paper's official implementation:**
-- Covariance centering uses the fixed centroid μ, not the empirical batch mean.
-- Progressive jitter sequence matches lm_polygraph: [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0].
-- Ridge with `positive=True` (coefficients constrained to be positive, as the paper found best).
-- HUQ grid search ranges: t_min ∈ [0.0, 0.3], t_max ∈ [0.7, 1.0], α ∈ [0.0, 1.0].
+A supervised density-based uncertainty quantification method adapted from classification OOD detection to text generation. The most directly comparable density-based internal-signal method to ours, but **we do not include it in our headline evaluation and we do not ship an implementation** — see [§Cited but Not Evaluated Baselines](#cited-but-not-evaluated-baselines) below for the rationale (storage cost is the binding constraint).
 
 **Paper:** Vazhentsev et al., "Token-Level Density-Based Uncertainty Quantification Methods for Eliciting Truthfulness of Large Language Models" (NAACL 2025, arXiv 2502.14427)
 **Code:** https://github.com/ArtemVazh/token_mahalanobis_distance
 
 **Rhetorical purpose:** Internal signal comparison — does MoE routing beat density-based uncertainty from hidden states?
 
-### 8. TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025) — FAITHFUL IMPLEMENTATION
+### 8. TOHA — TOpology-based HAllucination detector (Bazarova et al., 2025) — **NOT EVALUATED, NOT IN CODEBASE**
 
-A fundamentally different approach that treats attention maps as weighted graphs and uses topological data analysis to detect hallucination. Completely orthogonal to both routing-based and probability-based methods.
-
-**How it works (exact algorithm from the paper):**
-
-1. **Build distance matrices**: For each attention head, transform the attention matrix A ∈ ℝ^(seq_len × seq_len) into a distance matrix: `d_ij = 1 − a_ij` (clipped to [0, 1]), zero the diagonal, and symmetrize via `min(d_ij, d_ji)`.
-
-2. **Zero out prompt subgraph**: Set all prompt-to-prompt distances to 0. This isolates the topological structure of the response tokens relative to the prompt. (The paper uses `zero_out="prompt"`; `zero_out="response"` is also supported.)
-
-3. **Compute MTopDiv via persistent homology**: Run Vietoris-Rips filtration using the `ripser` library on the distance matrix (max dimension 0, for connected components). Sum the finite H₀ barcode lengths (birth − death), excluding the infinite component `[0, ∞)`. This sum is the **MTopDiv** (Manifold Topology Divergence) score.
-
-4. **Normalize by response length**: Divide MTopDiv by the number of response tokens, matching the paper's default.
-
-5. **Supervised head selection**: Use `SelectKBest` with ANOVA F-value (`f_classif`) to select the top-n attention heads that best discriminate between hallucinated and factual samples. The paper searches n from 1 to n_max (default 6) and picks the one with highest validation AUROC.
-
-6. **Classification**: Train a `LogisticRegression` on the selected head MTopDiv features. Prediction = `predict_proba[:, 1]`.
-
-7. **Unsupervised mode**: Select heads by difference-of-means between hallucinated and factual MTopDiv scores. Score = mean MTopDiv across selected heads (no classifier).
-
-**Key properties:**
-- **Per-token:** NO (head-level, but maps to per-sample scores).
-- **Generations needed:** 1 (single-pass).
-- **Training required:** Minimal — supervised mode needs labeled examples for head selection; unsupervised mode needs only a few to estimate head ranking.
-- **Signals used:** Attention matrices (all layers, all heads).
-- **Computational efficiency:** O(seq_len² × n_heads × n_layers) for distance matrix + ripser O(n³) per head in worst case.
-- **Orthogonal signal:** Attention topology captures completely different structure from routing entropy or output probability.
+A fundamentally different approach that treats attention maps as weighted graphs and uses topological data analysis to detect hallucination. Fully orthogonal to both routing-based and probability-based methods, but **we do not include it in our headline evaluation and we do not ship an implementation** — see [§Cited but Not Evaluated Baselines](#cited-but-not-evaluated-baselines) below for the rationale (storage cost is the binding constraint).
 
 **Paper:** Bazarova et al., "Hallucination Detection in LLMs with Topological Divergence on Attention Graphs" (arXiv 2504.10063, 2025) — **ACL 2026**
 **Code:** https://github.com/sb-ai-lab/TOHA
 
 **Rhetorical purpose:** Orthogonal signal — does topology of attention capture uncertainty that routing and density miss?
+
+## Cited but Not Evaluated Baselines
+
+These are recent, well-cited internal-signal detectors that we **cite in the related work** but **do not include in our headline evaluation**, and for which we **do not ship an implementation**. Both are sequence-level detectors that would require us to materialize very large volumes of internal state at inference time just to produce a single per-response score — a storage footprint that is not feasible for our test-time evaluation pipeline. We discuss them in the related work as the closest *sequence-level* cousins of our per-token MoE routing method.
+
+| Baseline | Why we don't evaluate it |
+|---|---|
+| **Token-Level Mahalanobis Distance** (Vazhentsev et al., NAACL 2025) | **Storage cost is the binding constraint.** The method requires materializing the per-layer hidden-state embeddings of every generated token, plus the per-layer inverse covariance matrices (one `(hidden_dim × hidden_dim)` matrix per layer), at inference time. For a long-context response on a multi-layer MoE, that is `(seq_len × n_layers × hidden_dim)` floats per response *plus* the per-layer inverse covariances — on the order of gigabytes per response. Materializing that much state for every generated response in our test-time pipeline is not feasible. (The method is also inherently sequence-level: the paper's final score is the *mean* Mahalanobis distance across tokens in the response, with a Ridge meta-model trained on top, so it cannot localize hallucinations to specific tokens.) |
+| **TOHA** (Bazarova et al., ACL 2026) | **Storage cost + per-response score only.** TOHA requires the **full** attention matrices (all layers, all heads, all token pairs) to build the response-attention subgraph, then runs Vietoris–Rips persistent homology on each head's distance matrix to compute a single MTopDiv scalar per head. For a model with `n_layers × n_heads` heads and a sequence of length `L`, that is `(n_layers × n_heads × L × L)` floats of attention state per response — again on the order of gigabytes for a typical MoE, even after discarding the prompt–prompt subgraph. The resulting score is also a property of the full response attention *graph*; there is no principled way to assign a per-token score from persistent homology applied to the full graph, so the method cannot be evaluated at the token level. |
+
+**Why we cite them anyway.** Both are recent, high-quality, *internal-signal* detectors (the same family our method belongs to) and both use signals that are orthogonal to ours — Mahalanobis uses embedding density, TOHA uses attention topology. We discuss them in the related work as the closest *sequence-level* cousins of our per-token MoE routing method, because they are the natural points of comparison for any future work that *does* have the storage budget to evaluate sequence-level internal-signal detectors. Our headline comparison is restricted to baselines that can be evaluated in the same per-token, low-storage regime as our method.
+
+---
 
 ## Excluded Baselines
 
@@ -174,14 +139,14 @@ A fundamentally different approach that treats attention maps as weighted graphs
 
 ## Baseline Matrix
 
-| Baseline | Type | Generations Needed | Training Required | Signals Used |
-|---|---|---|---|---|
-| Predictive Entropy | Entropy-based | 1 | No | Output probabilities |
-| Semantic Uncertainty | Generation-based | Multiple | No | Semantic clusters of generations |
-| SelfCheckGPT | Generation-based | Multiple | No | Cross-generation consistency |
-| LLM-Check | Internal signal | 1 | No | Hidden states, attention |
-| Semantic Energy | Internal signal | 1 | No | Penultimate logits + semantic clustering |
-| HaluNet | Trainable | 1 | Yes | Token probs, semantic embeddings, distributional uncertainty |
-| Token Mahalanobis | Density-based | 1 | Yes | Hidden states (multi-layer) |
-| TOHA | Topology-based | 1 | No | Attention matrices |
-| **Ours** | Internal signal (MoE) | 1 | No (optionally) | All of LLM-Check + routing entropy, expert similarity, expert usage, Gini, Herfindahl |
+| Baseline | Type | Generations Needed | Training Required | Per-Token? | Signals Used |
+|---|---|---|---|---|---|
+| Predictive Entropy | Entropy-based | 1 | No | ✅ Yes | Output probabilities |
+| Semantic Uncertainty | Generation-based | Multiple | No | ❌ No (answer-level) | Semantic clusters of generations |
+| SelfCheckGPT | Generation-based | Multiple | No | ❌ No (answer-level) | Cross-generation consistency |
+| LLM-Check | Internal signal | 1 | No | ✅ Yes | Hidden states, attention |
+| Semantic Energy | Internal signal | 1 | No | ❌ No (answer-level) | Penultimate logits + semantic clustering |
+| HaluNet | Trainable | 1 | Yes | ⚠️ Trained on token-level, evaluated at answer-level | Token probs, semantic embeddings, distributional uncertainty |
+| Token Mahalanobis | Density-based | 1 | Yes | ❌ No — see [Cited but Not Evaluated](#cited-but-not-evaluated-baselines) | Hidden states (multi-layer) |
+| TOHA | Topology-based | 1 | No | ❌ No — see [Cited but Not Evaluated](#cited-but-not-evaluated-baselines) | Attention matrices |
+| **Ours** | Internal signal (MoE) | 1 | No (optionally) | ✅ Yes | All of LLM-Check + routing entropy, expert similarity, expert usage, Gini, Herfindahl |
