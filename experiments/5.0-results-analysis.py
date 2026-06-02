@@ -8,10 +8,12 @@ Reads all *.parquet files under ``--predictions-dir``, aligns them with
 * Token-level : AUROC, AUPRC, F1, Accuracy, TPR@1/5/10%FPR, ECE
 
 Produces:
-  * comparison_table.md — Markdown tables (answer + token level)
-  * roc_curves.png     — Overlaid ROC curves
-  * calibration_plots.png — Reliability diagrams
-  * results.json       — Raw numbers for the paper
+  * comparison_table.md          — Markdown tables (answer + token level)
+  * comparison_table_answer.csv  — Answer-level metrics, one row per method
+  * comparison_table_token.csv   — Token-level metrics, one row per method
+  * roc_curves.png               — Overlaid ROC curves
+  * calibration_plots.png        — Reliability diagrams
+  * results.json                 — Raw numbers for the paper
 
 Usage
 -----
@@ -421,6 +423,31 @@ def analyse(
     )
     (output_dir / "comparison_table.md").write_text(comparison_md)
     print(f"  Saved {output_dir / 'comparison_table.md'}")
+
+    # ------------------------------------------------------------------
+    # 3b. CSV exports of the same tables (one row per method)
+    # ------------------------------------------------------------------
+    csv_cols = [
+        "auroc", "auprc", "f1", "accuracy",
+        "tpr_at_1fpr", "tpr_at_5fpr", "tpr_at_10fpr", "ece",
+        "threshold", "n",
+    ]
+
+    def _make_table_df(results: Dict[str, MethodInfo]) -> pd.DataFrame:
+        rows = []
+        for method, (_, metrics) in results.items():
+            row = {"method": method}
+            for c in csv_cols:
+                row[c] = metrics.get(c, 0.0)
+            rows.append(row)
+        return pd.DataFrame(rows, columns=["method"] + csv_cols)
+
+    answer_csv = output_dir / "comparison_table_answer.csv"
+    token_csv = output_dir / "comparison_table_token.csv"
+    _make_table_df(answer_results).to_csv(answer_csv, index=False, float_format="%.6f")
+    print(f"  Saved {answer_csv}")
+    _make_table_df(token_results).to_csv(token_csv, index=False, float_format="%.6f")
+    print(f"  Saved {token_csv}")
 
     # ------------------------------------------------------------------
     # 4. Save raw results.json
