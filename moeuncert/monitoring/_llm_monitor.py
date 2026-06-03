@@ -1,5 +1,9 @@
 from ._generation_reconstruction import reconstruct_model_output
-from ..forwards import modify_model, reset_model
+from ..forwards import (
+    modify_model,
+    reset_model,
+    is_moe_block,
+)
 from ..utils import standardize_outputs
 from ..metrics import (
     hidden_score,
@@ -9,7 +13,6 @@ from ..metrics import (
     expert_similarity_score,
     expert_usage_frequency,
 )
-from transformers.models.olmoe.modeling_olmoe import OlmoeSparseMoeBlock
 
 
 class MoEMonitor:
@@ -72,8 +75,12 @@ class MoEMonitor:
         forward_kwargs.update(model_kwargs)
 
         if self.output_experts_hidden:
+            # Discover all MoE blocks in the model via the class registry.
+            # Works for any model with a registered MoE block class
+            # (e.g., OlmoeSparseMoeBlock for OLMoE, Gemma4TextExperts for
+            # Gemma 4).
             moe_blocks = [
-                m for m in self.model.modules() if isinstance(m, OlmoeSparseMoeBlock)
+                m for m in self.model.modules() if is_moe_block(m)
             ]
             num_layers = len(moe_blocks)
             _step_buffer = []
