@@ -2,6 +2,53 @@
 
 This directory contains numbered experiment scripts organized into sections based on the research workflow.
 
+## Supported Models
+
+Both models below are registered in `moeuncert.forwards.MOE_FORWARD_REGISTRY`,
+so the MoE-instrumentation (router logits, expert hidden states, expert usage
+patterns, etc.) works for either one out of the box. To switch models, change
+`$MODEL` in `pipeline_config.sh` (or override at the command line) and re-run
+the pipeline.
+
+| Model | HF id | MoE layout | Default quant | Slug |
+|---|---|---|---|---|
+| OLMoE-1B-7B-0924-Instruct | `allenai/OLMoE-1B-7B-0924-Instruct` | 64 experts, 8 active | 4-bit | `allenai__OLMoE-1B-7B-0924-Instruct` |
+| Gemma 4 26B A4B IT (text-only) | `google/gemma-4-26B-A4B-it` | 128 experts + 1 shared, 8 active | 4-bit | `google__gemma-4-26B-A4B-it` |
+
+Gemma 4 is a multimodal model (text + image + audio for the smaller variants);
+we use it as a text-only `AutoModelForCausalLM` in this pipeline. Its MoE
+block class is `Gemma4TextExperts` and its host layer
+(`Gemma4TextDecoderLayer`) flattens hidden states before calling the experts,
+which our registry handles automatically.
+
+### Smoke testing a new model
+
+Before running the full pipeline on a new model, run the smoke test to verify
+the MoE instrumentation produces the expected tensor shapes:
+
+```bash
+python experiments/_smoke_test_moe.py --model google/gemma-4-26B-A4B-it
+```
+
+The script loads the model, runs a 4-token `generate()`, and asserts that
+`experts_hidden` is non-empty and has the expected 4D layout
+`(batch, seq, top_k, hidden)`. Exits 0 on success.
+
+### Adding a new MoE model
+
+1. Implement a new `forward_<model>` function in
+   `moeuncert/forwards/_model_forwards.py`. The forward must set
+   `self.last_experts_hidden` to a dict with keys `expert_idx`,
+   `expert_weights`, `expert_hidden_states` matching the layout used by
+   `forward_olmoe` (see `moeuncert/metrics/_metrics.py` for shapes).
+2. Import the MoE block class in
+   `moeuncert/forwards/_experts_states.py` and add an entry to
+   `MOE_FORWARD_REGISTRY`. If the new block's host layer flattens hidden
+   states before calling the experts, also wrap the import in a
+   `try/except` and use `_install_parent_shape_capture` (the same flow used
+   for Gemma 4) so the forward can recover batch/seq.
+3. Run the smoke test to confirm the registry picks it up.
+
 ## Section 0: Exploration & Testing
 
 ### 0.0-hallucination-detection-test.ipynb
@@ -37,14 +84,11 @@ Generates answers to RealtimeQA questions using an instruction-tuned LLM. Produc
 
 Computes evaluation metrics (ROUGE, BERTScore, BLEU) comparing generated answers against references. Saves results to `data/<dataset_slug>/<model_slug>/results.parquet`.
 
-### 1.1-analyze-metrics.py
+### 1.1-generate-baseline-samples.py
 
-Analyzes generation metrics from step 1.0 to assess their separability between base and RAG outputs. Creates visualizations including:
-- Violin plots of metric distributions
-- ROC curves for individual metrics and logistic regression
-- Confusion matrices at accuracy-optimal thresholds
-
-Used to evaluate whether generation quality metrics can serve as proxies for hallucination detection.
+Generates multiple stochastic samples per question for sampling-based hallucination
+baselines (Semantic Uncertainty, Semantic Energy, SelfCheckGPT). Saves them to
+`data/<dataset_slug>/<model_slug>/sampled_generation/`.
 
 ---
 
@@ -77,7 +121,7 @@ The easiest way to run the full workflow is via the two shell pipelines in this 
 ./experiments/train_pipeline.sh
 ```
 
-- Generates training data for RealtimeQA 2025 (default)
+- Generates training data for RealtimeQA 2024-2025 (default)
 - Labels the data with an LLM-as-judge (`zai-org/GLM-5.1` on DeepInfra by default)
 - Trains the MoE detector, fits baseline thresholds, and trains HaluNet
 - Saves artefacts to `models/<model_slug>/`:
@@ -85,7 +129,8 @@ The easiest way to run the full workflow is via the two shell pipelines in this 
   - `thresholds.json` – tuned thresholds for baselines
   - `halunet.pt` – trained HaluNet checkpoint
 
-The training pipeline refuses to overwrite existing artefacts; delete the model directory if you want to re-run.
+The training pipeline skips phases that already have the expected outputs (no
+overwrites) — delete the model directory if you want to re-run from scratch.
 
 ### 2. Evaluation pipeline
 
@@ -98,7 +143,9 @@ The training pipeline refuses to overwrite existing artefacts; delete the model 
 - Runs every detection method (our detector + all baselines + HaluNet)
 - Produces comparison tables, ROC curves, and calibration plots in `data/realtimeqa-2026/<model_slug>/analysis/`
 
-The evaluation pipeline will abort immediately if the training artefacts are missing, and will also abort if predictions already exist for the target test period (to avoid accidental overwrites).
+The evaluation pipeline will abort immediately if the training artefacts are
+missing. Phases that already have outputs (results, labels, predictions,
+analysis) are skipped automatically to avoid redundant work.
 
 ### Configuration
 
@@ -106,9 +153,11 @@ Shared defaults live in `experiments/pipeline_config.sh`:
 
 | Variable | Default | What to change |
 |---|---|---|
-| `MODEL` | `allenai/OLMoE-1B-7B-0924-Instruct` | Subject model whose outputs are scored |
+| `MODEL` | `allenai/OLMoE-1B-7B-0924-Instruct` | Subject model whose outputs are scored (see [Supported Models](#supported-models)) |
+| `QUANTIZE` | `4-bit` | One of `16-bit`, `8-bit`, `4-bit` |
 | `LABEL_MODEL` | `zai-org/GLM-5.1` | LLM used as judge to label hallucinations |
-| `TRAIN_YEARS` | `2025` | Year(s) used for training |
+| `TRAIN_YEARS` | `2024 2025` | Year(s) used for training |
+| `TRAIN_MONTH` | *(empty)* | Leave empty for all months; set to e.g. `1` for January only |
 | `TEST_YEARS` | `2026` | Year(s) used for OOD evaluation |
 | `TEST_MONTH` | *(empty)* | Leave empty for all months; set to e.g. `1` for January only |
 | `NUM_SAMPLES` | `5` | Number of stochastic samples per question for sampling-based baselines |
@@ -129,9 +178,39 @@ python experiments/2.0-make-labels.py --model allenai/OLMoE-1B-7B-0924-Instruct 
 
 ```
 data/
-└── realtimeqa-{year}-{month}/
+└── realtimeqa-{year1}[-{year2}[-...]][-{MM}]/
+    ├── realtimeqa_original.parquet                # Raw dataset (shared across models)
     └── {model_slug}/
-        ├── realtimeqa_original.parquet                # Raw dataset
         ├── results.parquet                            # Generated answers + metrics
-        └── results_labeled_{labelling_model}.parquet  # With hallucination labels
+        ├── results_labeled_{labelling_model}.parquet  # With hallucination labels
+        ├── base_generation/                # 1.0 output tensors (no evidence)
+        │   └── model_outputs__batch_*.pt
+        ├── evidence_generation/            # 1.0 output tensors (with evidence)
+        │   └── model_outputs__batch_*.pt
+        ├── sampled_generation/             # 1.1 sampled responses
+        │   └── sampled_outputs__batch_*.pt
+        ├── predictions/                    # 4.0 per-method predictions
+        │   ├── predictive_entropy.parquet
+        │   ├── llm_check.parquet
+        │   ├── detector.parquet
+        │   ├── halunet.parquet
+        │   ├── semantic_uncertainty.parquet
+        │   ├── semantic_energy.parquet
+        │   ├── selfcheck_nli.parquet
+        │   ├── selfcheck_prompt.parquet
+        │   └── ground_truth.parquet
+        └── analysis/                       # 5.0 results, tables, plots
+            ├── comparison_table.md
+            ├── comparison_table_answer.csv
+            ├── comparison_table_token.csv
+            └── *.png
+
+models/
+└── {model_slug}/
+    ├── detector.pkl                    # Trained MoE detector (3.0)
+    ├── thresholds.json                 # Tuned baseline thresholds (3.1)
+    ├── halunet.pt                      # HaluNet checkpoint (3.2)
+    ├── halunet_train_summary.json
+    ├── train_summary.json
+    └── val_results.json
 ```

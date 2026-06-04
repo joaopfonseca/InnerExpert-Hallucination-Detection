@@ -5,6 +5,25 @@
 # This file is sourced by both pipeline scripts.  Edit these variables
 # if you want to change the model, sampling parameters, or the data split.
 # ============================================================================
+#
+# ----------------------------------------------------------------------------
+# SUPPORTED MODELS
+# ----------------------------------------------------------------------------
+# The pipeline is driven by the HF model id in $MODEL below.  Both models
+# below are registered in moeuncert.forwards.MOE_FORWARD_REGISTRY, so the
+# MoE-instrumentation (router logits, expert hidden states, etc.) works for
+# either one out of the box.
+#
+#   Model                                  HF id                                          MoE layout              Notes
+#   ─────────────────────────────────────  ─────────────────────────────────────────────  ──────────────────────  ─────────────────────────────
+#   OLMoE-1B-7B-0924-Instruct              allenai/OLMoE-1B-7B-0924-Instruct              64 experts, 8 active   Default. 4-bit quantization.
+#   Gemma 4 26B A4B IT (text-only)         google/gemma-4-26B-A4B-it                      128+1 shared, 8 active Multimodal; we use it as CausalLM.
+#
+# To switch models, change $MODEL and re-source (or just re-run the pipeline).
+# Quantization is set globally via $QUANTIZE; per-model recommendations are
+# listed above.  Each model gets its own data and models directory derived
+# from the HF id slug (so the two models do not collide on disk).
+# ----------------------------------------------------------------------------
 
 # --- MODEL ------------------------------------------------------------------
 export MODEL="allenai/OLMoE-1B-7B-0924-Instruct"
