@@ -24,6 +24,9 @@ import torch
 from ._base import BaseBaseline
 
 
+from moeuncert.experiments import resolve_cache_dir
+
+
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
     """Group list of predictions into semantic clusters using NLI.
 
@@ -179,8 +182,8 @@ class EntailmentDeberta:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(resolve_cache_dir(model_name)))
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, cache_dir=str(resolve_cache_dir(model_name)))
         self.model.to(device)
         self.model.eval()
 

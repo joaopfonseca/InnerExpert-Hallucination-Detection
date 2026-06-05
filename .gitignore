@@ -4,3 +4,4 @@ data
 figures
 .venv/
 venv/
+pretrained_models/
