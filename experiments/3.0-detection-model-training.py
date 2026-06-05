@@ -60,6 +60,7 @@ except NameError:
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
+    resolve_cache_dir,
     read_and_collate_outputs,
     load_multi_year_data,
     stratified_group_split,
@@ -135,7 +136,13 @@ def _extract_token_features(
     gen_end: int,
     n_tokens: int,
 ) -> Dict[str, torch.Tensor]:
-    """Extract per-token features for generated tokens."""
+    """Extract per-token features for generated tokens.
+
+    Returns an empty dict if ``gen_end <= gen_start`` or ``n_tokens <= 0``;
+    callers should skip such samples (e.g. an empty generation).
+    """
+    if gen_end <= gen_start or n_tokens <= 0:
+        return {}
     hidden_start = gen_start - 1
     hidden_end = gen_end - 1
 
@@ -187,6 +194,7 @@ def prepare_training_data(
     features_list = []
     labels_list = []
     confidence_list = []
+    skipped_samples = 0
 
     for _, row in tqdm(df_labeled.iterrows(), total=len(df_labeled), desc="  Processing"):
         question_id = str(row['question_id'])
@@ -219,11 +227,18 @@ def prepare_training_data(
         gen_start, gen_end = find_generation_boundaries(input_ids, sequences)
 
         gen_len = gen_end - gen_start
+        if gen_len <= 0:
+            skipped_samples += 1
+            continue
         if gen_len < n_tokens:
             n_tokens = gen_len
             token_labels = token_labels[:n_tokens]
         else:
             gen_end = gen_start + n_tokens
+
+        if n_tokens <= 0:
+            skipped_samples += 1
+            continue
 
         token_features = _extract_token_features(
             all_outputs, tensor_idx,
@@ -241,6 +256,16 @@ def prepare_training_data(
         labels_list.append(token_labels)
         confidence_list.append(
             torch.full((n_tokens,), row['label_hallucination_confidence'], dtype=torch.float)
+        )
+
+    if skipped_samples:
+        print(f"  Skipped {skipped_samples} sample(s) with empty/zero-length generation")
+
+    if not features_list:
+        raise ValueError(
+            f"No usable samples in labeled data "
+            f"(skipped {skipped_samples}/{len(df_labeled)}). "
+            "Check that model outputs and labeled dataset are aligned."
         )
 
     features = {}
@@ -433,7 +458,10 @@ if __name__ == "__main__":
     # Prepare token-level features and labels
     # =========================================================================
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        cache_dir=str(resolve_cache_dir(args.model)),
+    )
 
     features, labels = prepare_training_data(
         df_labeled,

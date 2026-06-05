@@ -263,7 +263,9 @@ if __name__ == "__main__":
 
     torch.cuda.empty_cache()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    from moeuncert.experiments import resolve_cache_dir
+    cache_dir = resolve_cache_dir(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(cache_dir))
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
@@ -272,6 +274,7 @@ if __name__ == "__main__":
         model_name,
         attn_implementation="eager",
         device_map="auto",
+        cache_dir=str(cache_dir),
         **quantization_kwargs,
     )
     model_monitor = MoEMonitor(

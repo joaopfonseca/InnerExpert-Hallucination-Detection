@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from moeuncert.monitoring import MoEMonitor
 from moeuncert.datasets import fetch_realtimeqa
 from moeuncert.utils import tokenize_realtimeqa, standardize_outputs, move_to_device
-from moeuncert.experiments import resolve_model_slug
+from moeuncert.experiments import resolve_model_slug, resolve_cache_dir
 from moeuncert.experiments.utils import get_quantization_kwargs
 
 RANDOM_SEED = 42
@@ -40,13 +40,14 @@ model_slug = resolve_model_slug(model_name)
 # Clear cache to ensure we have enough memory for the model
 torch.cuda.empty_cache()
 
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(resolve_cache_dir(model_name)))
 tokenizer.pad_token = tokenizer.eos_token  # Required for batching
 tokenizer.padding_side = "left"  # Left padding for generation
 
 quantization_kwargs = get_quantization_kwargs(args.quantize)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
+    cache_dir=str(resolve_cache_dir(model_name)),
     attn_implementation="eager",
     device_map="auto",
     **quantization_kwargs,

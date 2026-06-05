@@ -34,6 +34,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
+    resolve_cache_dir,
     load_multi_year_data,
     optimal_threshold,
     stratified_group_split,
@@ -350,7 +351,7 @@ def fit_semantic_uncertainty(
     # Need to decode token IDs to text for NLI-based semantic clustering.
     # We'll load the tokenizer once.
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, cache_dir=str(resolve_cache_dir(model)))
 
     # Compute scores and align with labels
     su = SemanticUncertainty()
@@ -439,7 +440,7 @@ def fit_semantic_energy(
 
     # Load tokenizer for decoding and NLI clustering
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, cache_dir=str(resolve_cache_dir(model)))
 
     # Use SemanticUncertainty's clustering for building semantic groups
     su = SemanticUncertainty()

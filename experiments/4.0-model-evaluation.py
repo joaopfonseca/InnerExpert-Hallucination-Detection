@@ -52,6 +52,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
+    resolve_cache_dir,
     load_multi_year_data,
     create_token_labels,
     find_generation_boundaries,
@@ -306,7 +307,7 @@ def evaluate_semantic_uncertainty(
         data_root, test_years, test_month, model, num_samples=num_samples
     )
     su = SemanticUncertainty()
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, cache_dir=str(resolve_cache_dir(model)))
 
     rows = []
     for qid, responses_tokens in sampled["responses_by_qid"].items():
@@ -349,7 +350,7 @@ def evaluate_semantic_energy(
     )
     su = SemanticUncertainty()
     se = SemanticEnergy()
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, cache_dir=str(resolve_cache_dir(model)))
 
     rows = []
     for qid, responses_tokens in sampled["responses_by_qid"].items():
@@ -402,7 +403,7 @@ def evaluate_selfcheck(
     sampled = load_sampled_outputs(
         data_root, test_years, test_month, model, num_samples=num_samples
     )
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, cache_dir=str(resolve_cache_dir(model)))
 
     if variant == "nli":
         checker = SelfCheckNLI()
@@ -893,7 +894,7 @@ def main():
     # -----------------------------------------------------------------------
     print("\n[GT] Building ground truth ...")
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=str(resolve_cache_dir(args.model)))
     gt_df = build_ground_truth(outputs, df_labeled, label_lookup, tokenizer)
     gt_path = predictions_dir / "ground_truth.parquet"
     gt_df.to_parquet(gt_path, index=False)

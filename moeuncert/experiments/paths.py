@@ -5,6 +5,151 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
+# ---------------------------------------------------------------------------
+#  Project root detection
+# ---------------------------------------------------------------------------
+
+
+def resolve_project_root() -> Path:
+    """Return the project root directory (the parent of `moeuncert/`).
+
+    This file lives inside `moeuncert/experiments/`, so the project root is
+    three directories above it.
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_pretrained_models_dir(cache_root: Optional[Path] = None) -> Path:
+    """Return the local model cache directory.
+
+    Defaults to ``<project_root>/pretrained_models/``.  The pipeline also
+    sets ``HF_HOME`` to this directory so that HuggingFace's auto-download
+    and ``cache_dir`` both point to the same place.
+
+    Parameters
+    ----------
+    cache_root : Path, optional
+        Override directory.  If None, uses the default described above.
+
+    Returns
+    -------
+    Path
+        Absolute path to the local model cache directory.
+    """
+    if cache_root is None:
+        cache_root = resolve_project_root() / "pretrained_models"
+    cache_root = cache_root.resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root
+
+
+def resolve_cache_dir(
+    model_name: str,
+    cache_root: Optional[Path] = None,
+) -> Path:
+    """Return the per-model cache directory inside the project.
+
+    HuggingFace ``from_pretrained`` uses a nested ``models--<org>--<name>``
+    layout.  We replicate that convention so the cache is a drop-in
+    replacement for the global ``~/.cache/huggingface/hub/`` directory.
+
+    Parameters
+    ----------
+    model_name : str
+        Full HuggingFace model id, e.g. ``"google/gemma-4-26B-A4B-it"``.
+    cache_root : Path, optional
+        Override the root cache directory (default ``pretrained_models/``).
+
+    Returns
+    -------
+    Path
+        Absolute path that can be passed as ``cache_dir`` to
+        ``AutoModel.from_pretrained(..., cache_dir=...)``.
+
+    Examples
+    --------
+    >>> resolve_cache_dir("google/gemma-4-26B-A4B-it")
+    PosixPath('/.../MoE-Uncertainty-Estimation/pretrained_models/models--google--gemma-4-26B-A4B-it')
+    """
+    root = resolve_pretrained_models_dir(cache_root)
+    safe_name = model_name.replace("/", "--")
+    return root / f"models--{safe_name}"
+
+
+# ---------------------------------------------------------------------------
+#  Project root detection
+# ---------------------------------------------------------------------------
+
+def resolve_project_root() -> Path:
+    """Return the project root directory (the parent of `moeuncert/`).
+
+    This file lives inside `moeuncert/experiments/`, so the project root is
+    three directories above it.
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_pretrained_models_dir(cache_root: Optional[Path] = None) -> Path:
+    """Return the local model cache directory.
+
+    Defaults to ``<project_root>/pretrained_models/``.  The pipeline also
+    sets ``HF_HOME`` to this directory so that HuggingFace's auto-download
+    and ``cache_dir`` both point to the same place.
+
+    Parameters
+    ----------
+    cache_root : Path, optional
+        Override directory.  If None, uses the default described above.
+
+    Returns
+    -------
+    Path
+        Absolute path to the local model cache directory.
+    """
+    if cache_root is None:
+        cache_root = resolve_project_root() / "pretrained_models"
+    cache_root = cache_root.resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root
+
+
+def resolve_cache_dir(
+    model_name: str,
+    cache_root: Optional[Path] = None,
+) -> Path:
+    """Return the per-model cache directory inside the project.
+
+    HuggingFace ``from_pretrained`` uses a nested ``models--<org>--<name>``
+    layout.  We replicate that convention so the cache is a drop-in
+    replacement for the global ``~/.cache/huggingface/hub/`` directory.
+
+    Parameters
+    ----------
+    model_name : str
+        Full HuggingFace model id, e.g. ``"google/gemma-4-26B-A4B-it"``.
+    cache_root : Path, optional
+        Override the root cache directory (default ``pretrained_models/``).
+
+    Returns
+    -------
+    Path
+        Absolute path that can be passed as ``cache_dir`` to
+        ``AutoModel.from_pretrained(..., cache_dir=...)``.
+
+    Examples
+    --------
+    >>> resolve_cache_dir("google/gemma-4-26B-A4B-it")
+    PosixPath('/.../MoE-Uncertainty-Estimation/pretrained_models/models--google--gemma-4-26B-A4B-it')
+    """
+    root = resolve_pretrained_models_dir(cache_root)
+    safe_name = model_name.replace("/", "--")
+    return root / f"models--{safe_name}"
+
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+
 def resolve_model_slug(model_name: str) -> str:
     """
     Convert model name to filesystem-safe slug.

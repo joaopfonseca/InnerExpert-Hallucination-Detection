@@ -223,14 +223,19 @@ if __name__ == "__main__":
     # Clear cache to ensure we have enough memory for the model
     torch.cuda.empty_cache()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    from moeuncert.experiments import resolve_cache_dir
+    cache_dir = resolve_cache_dir(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(cache_dir))
     tokenizer.pad_token = tokenizer.eos_token  # Required for batching
     tokenizer.padding_side = "left"  # Left padding for generation
     quantization_kwargs = get_quantization_kwargs(args.quantize)
+    from moeuncert.experiments import resolve_cache_dir
+    cache_dir = resolve_cache_dir(model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         attn_implementation="eager",
         device_map="auto",
+        cache_dir=str(cache_dir),
         **quantization_kwargs,
     )
     model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)

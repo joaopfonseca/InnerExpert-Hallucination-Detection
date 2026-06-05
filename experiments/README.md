@@ -174,6 +174,44 @@ python experiments/1.0-generate-answers.py --model allenai/OLMoE-1B-7B-0924-Inst
 python experiments/2.0-make-labels.py --model allenai/OLMoE-1B-7B-0924-Instruct --years 2025 --month 1 --deepinfra-model zai-org/GLM-5.1
 ```
 
+### Model cache (`pretrained_models/`)
+
+All HuggingFace downloads (weights, tokenizers, configs) are cached **inside**
+the project at `pretrained_models/` instead of the global
+`~/.cache/huggingface/`. This keeps the repo self-contained and avoids filling
+up the user's home directory.
+
+The shell pipelines set `HF_HOME` automatically via `pipeline_config.sh`. When
+running Python scripts directly, the code still passes `cache_dir` to every
+`from_pretrained()` call, so the local cache is used even if the environment
+variable is not set.
+
+Per-model subdirectories follow HuggingFace's naming convention:
+```
+pretrained_models/
+└── models--<org>--<name>/
+    ├── snapshots/
+    └── ...
+```
+
+If you already have the model cached globally and want to avoid re-downloading,
+you have three options:
+
+1. **Symlink** the global cache entry into `pretrained_models/`:
+   ```bash
+   ln -s ~/.cache/huggingface/hub/models--allenai--OLMoE-1B-7B-0924-Instruct \
+          pretrained_models/models--allenai--OLMoE-1B-7B-0924-Instruct
+   ```
+2. **Override** `HF_HOME` in `pipeline_config.sh` (or your shell) to point back
+   to the global cache:
+   ```bash
+   export HF_HOME="$HOME/.cache/huggingface"
+   ```
+3. **Set** `--cache-dir` manually when running individual scripts:
+   ```bash
+   python experiments/1.0-generate-answers.py --model ... --cache-dir /mnt/bigdisk/hf_cache
+   ```
+
 ## Data Structure
 
 ```

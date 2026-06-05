@@ -30,6 +30,19 @@ export MODEL="allenai/OLMoE-1B-7B-0924-Instruct"
 export QUANTIZE="4-bit"
 export LABEL_MODEL="zai-org/GLM-5.1"
 
+# --- MODEL CACHE (HF_HOME) ---------------------------------------------------
+# By default all HuggingFace downloads (models, tokenizers, datasets) are
+# cached inside the project at ``pretrained_models/`` instead of the global
+# ``~/.cache/huggingface/``.  This makes the repo self-contained and avoids
+# filling up the user's home directory.
+#
+# If you prefer to use the global cache, comment out the line below or set
+# HF_HOME to another directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export HF_HOME="${PROJECT_ROOT}/pretrained_models"
+export TRANSFORMERS_CACHE="${HF_HOME}"
+
 # --- GENERATION --------------------------------------------------------------
 export MAX_NEW_TOKENS=65
 

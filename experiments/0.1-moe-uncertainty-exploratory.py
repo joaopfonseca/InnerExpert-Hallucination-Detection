@@ -7,13 +7,19 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
 from moeuncert import llm_description, generate_params, reconstruct_model_output
+from moeuncert.experiments import resolve_cache_dir
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device set to: {DEVICE}")
 
-tokenizer = AutoTokenizer.from_pretrained("allenai/OLMoE-1B-7B-0924-Instruct")
+tokenizer = AutoTokenizer.from_pretrained(
+    "allenai/OLMoE-1B-7B-0924-Instruct",
+    cache_dir=str(resolve_cache_dir("allenai/OLMoE-1B-7B-0924-Instruct")),
+)
 model = AutoModelForCausalLM.from_pretrained(
-    "allenai/OLMoE-1B-7B-0924-Instruct", attn_implementation="eager"
+    "allenai/OLMoE-1B-7B-0924-Instruct",
+    cache_dir=str(resolve_cache_dir("allenai/OLMoE-1B-7B-0924-Instruct")),
+    attn_implementation="eager",
 ).to(DEVICE)
 
 print(llm_description(model))
