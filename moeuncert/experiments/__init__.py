@@ -15,6 +15,7 @@ from .utils import (
     optimal_threshold,
     get_quantization_kwargs,
     read_and_collate_outputs,
+    iter_batch_outputs,
     stratified_group_split,
     compute_metrics_at_threshold,
     create_token_labels,
@@ -25,6 +26,8 @@ from .data_loading import (
     load_labeled_dataset,
     load_model_outputs,
     load_multi_year_data,
+    stream_multi_year_data,
+    stream_sampled_outputs,
 )
 
 
@@ -41,6 +44,7 @@ __all__ = [
     "optimal_threshold",
     "get_quantization_kwargs",
     "read_and_collate_outputs",
+    "iter_batch_outputs",
     "stratified_group_split",
     "compute_metrics_at_threshold",
     "create_token_labels",
@@ -48,5 +52,7 @@ __all__ = [
     "load_labeled_dataset",
     "load_model_outputs",
     "load_multi_year_data",
+    "stream_multi_year_data",
+    "stream_sampled_outputs",
     "replace_inf_with_nan",
 ]

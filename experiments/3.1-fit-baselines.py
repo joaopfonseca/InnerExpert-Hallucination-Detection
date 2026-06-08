@@ -38,6 +38,7 @@ from moeuncert.experiments import (
     load_multi_year_data,
     optimal_threshold,
     stratified_group_split,
+    stream_multi_year_data,
 )
 
 
@@ -328,13 +329,13 @@ def fit_semantic_uncertainty(
     Loads sampled outputs, computes semantic entropy scores per question,
     and fits an F1-optimal threshold.
     """
-    from moeuncert.experiments.data_loading import load_sampled_outputs
+    from moeuncert.experiments.data_loading import stream_sampled_outputs
     from moeuncert.baselines.semantic_uncertainty import SemanticUncertainty
 
     print(f"\n--- SemanticUncertainty (num_samples={num_samples}) ---")
 
-    # Load sampled data
-    sampled = load_sampled_outputs(
+    # Load sampled data via streaming (one batch at a time, then accumulated).
+    sampled = stream_sampled_outputs(
         data_root, years, month, model, num_samples=num_samples
     )
     responses_by_qid = sampled["responses_by_qid"]
@@ -416,14 +417,14 @@ def fit_semantic_energy(
     Loads sampled outputs, clusters responses via NLI, computes semantic
     energy scores per question, and fits an F1-optimal threshold.
     """
-    from moeuncert.experiments.data_loading import load_sampled_outputs
+    from moeuncert.experiments.data_loading import stream_sampled_outputs
     from moeuncert.baselines.semantic_uncertainty import SemanticUncertainty
     from moeuncert.baselines.semantic_energy import SemanticEnergy
 
     print(f"\n--- SemanticEnergy (num_samples={num_samples}) ---")
 
-    # Load sampled data
-    sampled = load_sampled_outputs(
+    # Load sampled data via streaming (one batch at a time, then accumulated).
+    sampled = stream_sampled_outputs(
         data_root, years, month, model, num_samples=num_samples
     )
     responses_by_qid = sampled["responses_by_qid"]
@@ -591,29 +592,45 @@ def main():
     print(f"Model: {args.model}")
     print(f"Aggregations: {args.aggregations}")
     
-    # Load training data
-    df_labeled, outputs, _ = load_multi_year_data(
+    # Load training data via streaming layer.  We collect the per-year
+    # yields into a single (df_labeled, outputs) pair to keep the fit
+    # functions unchanged.  Peak RAM during loading is bounded by the
+    # largest single year rather than the whole corpus.
+    print("\n[streaming] Loading multi-year data one year at a time...")
+    per_year_dfs: List[pd.DataFrame] = []
+    per_year_outputs: List[Dict] = []
+    for df, outputs, _data_dir in stream_multi_year_data(
         args.data_root,
         args.train_years,
         args.month,
         args.model,
         args.label_model,
-    )
-    
+    ):
+        per_year_dfs.append(df)
+        per_year_outputs.append(outputs)
+    df_labeled = pd.concat(per_year_dfs, ignore_index=True)
+    # Concatenate per-year outputs in the same order (mirrors legacy).
+    from moeuncert.experiments.data_loading import _concat_parts
+    if len(per_year_outputs) == 1:
+        outputs = per_year_outputs[0]
+    else:
+        outputs = _concat_parts(per_year_outputs)
+    del per_year_dfs, per_year_outputs
+
     # Extract answer-level labels for reference
     qids, labels = extract_answer_level_labels(df_labeled)
     print(f"\nTotal answers: {len(labels)}")
     print(f"Hallucination rate: {labels.mean():.1%}")
-    
+
     # Fit baselines
     thresholds = {}
-    
+
     # PredictiveEntropy
     for agg in args.aggregations:
         thresholds[f"predictive_entropy_{agg}"] = fit_predictive_entropy(
             outputs, df_labeled, aggregation=agg
         )
-    
+
     # LLM-Check (all score types)
     for score_type in ["attention", "hidden", "perplexity", "entropy"]:
         for agg in args.aggregations:
@@ -624,6 +641,14 @@ def main():
             thresholds[key] = fit_llm_check(
                 outputs, df_labeled, score_type=score_type, aggregation=agg
             )
+
+    # Free the heavy base+evidence outputs dict BEFORE loading sampled
+    # outputs (which can be 4-8 GB on its own for vocab=50k × gen_len=100
+    # × num_samples=5).  This is the critical OOM fix for 3.1.
+    print("\n[streaming] Freeing base/evidence outputs before loading sampled...")
+    del outputs
+    import gc
+    gc.collect()
     
     # SemanticUncertainty (requires sampled data from 1.1)
     thresholds["semantic_uncertainty"] = fit_semantic_uncertainty(

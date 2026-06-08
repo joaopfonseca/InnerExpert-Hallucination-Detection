@@ -38,6 +38,7 @@ from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
     load_multi_year_data,
+    stream_multi_year_data,
     stratified_group_split,
     find_generation_boundaries,
 )
@@ -231,15 +232,35 @@ def main():
     print(f"Model: {args.model}")
     print(f"Epochs: {args.epochs}, LR: {args.lr}, Batch size: {args.batch_size}")
 
-    # Load data
-    print("\nLoading training data...")
-    df_labeled, outputs, _ = load_multi_year_data(
+    # Load data via streaming, keeping only the keys HaluNet needs.
+    # This drops expert_hidden_scores, attention_scores, and other heavy
+    # keys BEFORE the per-year concat, reducing peak RAM by an order
+    # of magnitude.  Combined with per-year streaming, this fixes the
+    # OOM that 3.2 used to hit on combined-dir datasets.
+    halunet_keys = {
+        "log_likelihoods", "entropies", "last_hidden_states",
+        "question_id", "sequences", "input_ids",
+    }
+    print("\nLoading training data (streaming, filtered to HaluNet keys)...")
+    per_year_dfs: List[pd.DataFrame] = []
+    per_year_outputs: List[Dict] = []
+    for df, outputs, _data_dir in stream_multi_year_data(
         args.data_root,
         args.train_years,
         args.month,
         args.model,
         args.label_model,
-    )
+        filter_keys=halunet_keys,
+    ):
+        per_year_dfs.append(df)
+        per_year_outputs.append(outputs)
+    df_labeled = pd.concat(per_year_dfs, ignore_index=True)
+    from moeuncert.experiments.data_loading import _concat_parts
+    if len(per_year_outputs) == 1:
+        outputs = per_year_outputs[0]
+    else:
+        outputs = _concat_parts(per_year_outputs)
+    del per_year_dfs, per_year_outputs
 
     # Extract HaluNet features
     print("\nExtracting HaluNet features...")

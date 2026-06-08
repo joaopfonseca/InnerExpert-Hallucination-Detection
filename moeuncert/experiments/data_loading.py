@@ -6,7 +6,7 @@ data across RealtimeQA experiments.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 import torch
@@ -661,6 +661,461 @@ def load_sampled_outputs(
                             all_logprobs_by_qid[qid] = log_probs
                             if logits:
                                 all_logits_by_qid[qid] = logits
+
+    print(f"  Total questions with sampled data: {len(all_responses_by_qid)}")
+    return {
+        "responses_by_qid": all_responses_by_qid,
+        "log_probs_by_qid": all_logprobs_by_qid,
+        "logits_by_qid": all_logits_by_qid,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Streaming variants (memory-bounded alternatives to the loaders above)
+# ---------------------------------------------------------------------------
+# These functions exist to support scripts (3.1, 3.2) that need to iterate
+# over batch .pt files without materialising the full concatenated dict in
+# host RAM.  They yield per-batch (or per-year) data; the caller accumulates
+# into running aggregates.
+#
+# The legacy ``load_multi_year_data`` and ``load_sampled_outputs`` are NOT
+# changed; scripts that already work (3.0, 4.0, 5.0, 0.1, 0.2) keep using
+# them.  Only 3.1 and 3.2 migrate to the streaming path.
+
+
+def _stream_year_outputs(
+    data_dir: Path,
+    filter_keys: Optional[Set[str]] = None,
+) -> Iterator[Dict[str, Any]]:
+    """Yield (base_outputs, evidence_outputs) dicts in turn, then any extras.
+
+    Mirrors ``load_model_outputs``'s base/evidence split, but yields one
+    (base, evidence) pair per *batch* rather than concatenating across
+    batches.  ``filter_keys`` is forwarded to ``iter_batch_outputs`` so
+    unwanted keys (e.g. expert_hidden_scores when LLM-Check is not
+    being computed) are dropped before the next batch is read.
+    """
+    from .utils import iter_batch_outputs
+
+    base_dir = data_dir / "base_generation"
+    evidence_dir = data_dir / "evidence_generation"
+
+    base_files = sorted(base_dir.glob("model_outputs__batch_*.pt")) if base_dir.exists() else []
+    evidence_files = sorted(evidence_dir.glob("model_outputs__batch_*.pt")) if evidence_dir.exists() else []
+
+    if not base_files and not evidence_files:
+        return
+
+    max_len = max(len(base_files), len(evidence_files))
+    for i in range(max_len):
+        if i < len(base_files):
+            base_batch = next(iter_batch_outputs([base_files[i]], filter_keys))
+            base_batch["evidence_present"] = [False] * _batch_len(base_batch)
+            yield base_batch
+        if i < len(evidence_files):
+            evidence_batch = next(iter_batch_outputs([evidence_files[i]], filter_keys))
+            evidence_batch["evidence_present"] = [True] * _batch_len(evidence_batch)
+            yield evidence_batch
+
+
+def _batch_len(batch: Dict[str, Any]) -> int:
+    """Return the per-row count of a batch dict."""
+    if "question_id" in batch:
+        return len(batch["question_id"])
+    for v in batch.values():
+        if isinstance(v, torch.Tensor):
+            return v.shape[0]
+    return 0
+
+
+def stream_multi_year_data(
+    data_root: Path,
+    years: List[int],
+    month: Optional[int],
+    model: str,
+    label_model: Optional[str] = None,
+    filter_keys: Optional[Set[str]] = None,
+) -> Iterator[Tuple[pd.DataFrame, Dict[str, torch.Tensor], Path]]:
+    """Yield (per_year_df, per_year_outputs, data_dir) for each year with data.
+
+    Streaming counterpart to ``load_multi_year_data``.  Per-year model
+    outputs are filtered to ``filter_keys`` (if provided) and *not*
+    concatenated across years.  The caller is responsible for
+    accumulating into running aggregates.
+
+    Mirrors the legacy loader's year-discovery logic exactly:
+      * Per-year dir (``data/realtimeqa-YYYY/.../``) if it exists.
+      * Otherwise fall back to a combined dir that covers the year
+        (``data/realtimeqa-Y1-Y2-.../.../``).
+      * Within a year, base and evidence batch files are read
+        independently and yielded in order.
+
+    The ``pd.DataFrame`` yielded alongside each year's outputs is the
+    per-year labeled subset (with a ``year`` column set).  Callers
+    typically ``pd.concat`` the per-year dataframes at the end.
+    """
+    model_slug = resolve_model_slug(model)
+
+    print(f"\nLoading data for years (streaming): {years}")
+    yielded = 0
+    for year in years:
+        _, _, dataset_slug = resolve_dataset_slug([year], month)
+        data_dir = data_root / dataset_slug / model_slug
+
+        if not data_dir.exists():
+            print(f"  WARNING: {data_dir} not found, skipping year {year}")
+            continue
+
+        try:
+            df = load_labeled_dataset(data_dir, label_model)
+        except FileNotFoundError as e:
+            print(f"  WARNING: {e}")
+            continue
+
+        # Per-year outputs: collate per-batch via streaming helper, then
+        # concatenate within the year (one year at a time, so peak RAM
+        # is bounded by the largest single year rather than the whole
+        # corpus).  This matches the legacy load_model_outputs' behaviour
+        # of concatenating base+evidence within a data_dir, while
+        # *not* concatenating across years.
+        year_outputs = _load_year_outputs_streaming(data_dir, filter_keys)
+        if not year_outputs:
+            continue
+
+        df["year"] = year
+        df, year_outputs = _align_df_with_outputs(df, year_outputs)
+        yielded += 1
+        yield df, year_outputs, data_dir
+
+    if yielded == 0:
+        # Combined-dir fallback (mirrors legacy line 384-417)
+        combined = _find_combined_dataset_dir(data_root, model_slug, years, month)
+        if combined is not None:
+            data_dir, dataset_years = combined
+            print(
+                f"  Using combined dataset: {data_dir.parent} "
+                f"(covers years {dataset_years})"
+            )
+            df = load_labeled_dataset(data_dir, label_model)
+            year_outputs = _load_year_outputs_streaming(data_dir, filter_keys)
+            if not year_outputs:
+                raise ValueError(f"No data found for years {years}")
+
+            if set(dataset_years) != set(years):
+                df = _ensure_year_month_columns(df)
+                if "year" not in df.columns:
+                    raise ValueError(
+                        f"Dataset {data_dir.parent} spans years {dataset_years}, but "
+                        "the labeled parquet has no 'year' or 'question_date' column "
+                        "to filter. Re-generate per-year data or provide a dataset "
+                        "that matches the requested years."
+                    )
+                df = df[df["question_id"].apply(lambda x: str(x)[:4]).astype(int).isin(years)].copy()
+                if month is not None:
+                    if "month" not in df.columns:
+                        df = _ensure_year_month_columns(df)
+                    if "month" in df.columns:
+                        df = df[df["month"].eq(month)].copy()
+            elif "year" not in df.columns and len(years) == 1:
+                df["year"] = years[0]
+
+            if df.empty:
+                raise ValueError(f"No data found for years {years}")
+
+            df = df.reset_index(drop=True)
+            df, year_outputs = _align_df_with_outputs(df, year_outputs)
+            yield df, year_outputs, data_dir
+            return
+
+        raise ValueError(f"No data found for years {years}")
+
+
+def _load_year_outputs_streaming(
+    data_dir: Path,
+    filter_keys: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
+    """Concatenate base+evidence batch files for a single year, but stream
+    each batch through ``iter_batch_outputs`` to drop unwanted keys early.
+
+    Equivalent to ``load_model_outputs(data_dir)`` but with optional
+    ``filter_keys`` for memory savings between batches.
+
+    Each .pt file is saved by ``experiments/1.0-generate-answers.py`` in
+    the "dict of lists of tensors" format: ``{key: [tensor_batch_0,
+    tensor_batch_1, ...]}``.  ``iter_batch_outputs`` yields the loaded
+    dict for each file; we then ``extend`` (not ``append``) so the
+    per-key list flattens correctly.
+    """
+    from .utils import iter_batch_outputs
+
+    base_dir = data_dir / "base_generation"
+    evidence_dir = data_dir / "evidence_generation"
+
+    base_files = sorted(base_dir.glob("model_outputs__batch_*.pt")) if base_dir.exists() else []
+    evidence_files = sorted(evidence_dir.glob("model_outputs__batch_*.pt")) if evidence_dir.exists() else []
+
+    if not base_files and not evidence_files:
+        return {}
+
+    parts: List[Dict[str, Any]] = []
+    for files, is_evidence in [(base_files, False), (evidence_files, True)]:
+        if not files:
+            continue
+        part: Dict[str, Any] = {}
+        for loaded in iter_batch_outputs(files, filter_keys):
+            # Each loaded dict is in production format: {key: [tensor, tensor, ...]}.
+            # Extend (not append) so part[key] becomes a flat list of tensors.
+            for k, v in loaded.items():
+                if isinstance(v, list):
+                    if k not in part:
+                        part[k] = []
+                    part[k].extend(v)
+                else:
+                    if k not in part:
+                        part[k] = []
+                    part[k].append(v)
+        if "question_id" in part:
+            part["question_id"] = _normalize_question_ids(part["question_id"])
+        n = len(part.get("question_id", []))
+        if n == 0:
+            for val in part.values():
+                if isinstance(val, list) and val and isinstance(val[0], torch.Tensor):
+                    n = val[0].shape[0]
+                    break
+        part["evidence_present"] = [is_evidence] * n
+        parts.append(part)
+
+    if not parts:
+        return {}
+
+    if len(parts) == 1:
+        return _concat_parts(parts)
+
+    return _concat_parts(parts)
+
+
+def _concat_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Concatenate a list of per-year/per-mode dicts into one.
+
+    Each input ``part`` is in the production format
+    ``{key: [tensor_batch_0, tensor_batch_1, ...]}``.  We flatten
+    across parts (so part A's batches come before part B's batches) and
+    then ``torch.cat`` the tensor values, padding to max size in each
+    dim (mirrors ``read_and_collate_outputs``).
+    """
+    combined: Dict[str, Any] = {}
+    for key in parts[0].keys():
+        # Flatten the per-part lists into a single list of tensors.
+        flat: List = []
+        for p in parts:
+            if key in p:
+                v = p[key]
+                if isinstance(v, list):
+                    flat.extend(v)
+                else:
+                    flat.append(v)
+        if not flat:
+            continue
+        if all(isinstance(v, torch.Tensor) for v in flat):
+            if len(flat) == 1 and flat[0].dim() == 0:
+                combined[key] = flat[0]
+                continue
+            if all(v.shape == flat[0].shape for v in flat):
+                combined[key] = torch.concat(flat, dim=0)
+            else:
+                # Pad to max size in each dim before concat.
+                max_sizes = [max(v.shape[d] for v in flat) for d in range(flat[0].dim())]
+                padded = []
+                for t in flat:
+                    pad_cfg = []
+                    for d in range(t.dim() - 1, 0, -1):
+                        pad_cfg += [0, max_sizes[d] - t.shape[d]]
+                    padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
+                combined[key] = torch.cat(padded, dim=0)
+        else:
+            combined[key] = flat
+    if "question_id" in combined:
+        combined["question_id"] = _normalize_question_ids(combined["question_id"])
+    return combined
+
+
+def _extract_qid_samples(
+    batch: Dict[str, Any],
+    num_samples: int,
+    requested_years: Optional[List[int]] = None,
+) -> Tuple[Dict[str, List], List[str]]:
+    """Extract per-question sampled outputs from a single batch dict.
+
+    Returns (accumulator_updates, qids_seen) where accumulator_updates
+    is a dict that can be merged into a global {qid: [samples]} dict
+    via ``.extend()`` on each per-qid list.
+
+    The streaming version of ``load_sampled_outputs`` calls this once
+    per yielded batch; the caller accumulates across batches.
+    """
+    qids = batch.get("question_id", [])
+    updates: Dict[str, List] = {}
+
+    for idx, raw_qid in enumerate(qids):
+        qid = _normalize_question_id_value(raw_qid)
+        if requested_years is not None:
+            qid_year = int(qid[:4]) if len(qid) >= 4 and qid[:4].isdigit() else None
+            if qid_year is not None and qid_year not in requested_years:
+                continue
+
+        responses: List[List[int]] = []
+        log_probs: List[List[float]] = []
+        logits: List[List[float]] = []
+
+        for s in range(num_samples):
+            seq_key = f"sequences_sample{s}"
+            ll_key = f"log_likelihoods_sample{s}"
+            scores_key = f"scores_sample{s}"
+
+            if seq_key not in batch or ll_key not in batch:
+                continue
+
+            gen_tokens = batch[seq_key][idx]
+            gen_tokens = gen_tokens[gen_tokens != 0]
+            response_tokens = gen_tokens.tolist()
+            responses.append(response_tokens)
+
+            ll = batch[ll_key][idx].tolist()
+            log_probs.append(ll)
+
+            if scores_key in batch:
+                scores = batch[scores_key][idx]
+                gen_len = min(len(ll), scores.shape[0])
+                if gen_len > 0 and len(gen_tokens) > 0:
+                    token_ids = gen_tokens[:gen_len]
+                    response_logits = scores[:gen_len].gather(
+                        -1, token_ids.unsqueeze(-1).to(scores.device)
+                    ).squeeze(-1).tolist()
+                    logits.append(response_logits)
+
+        if responses:
+            # STREAMING-FIX: use .extend() (not =) so that a question_id
+            # appearing in multiple batches accumulates all its samples
+            # rather than being clobbered by the last batch.  The legacy
+            # load_sampled_outputs retains its original behaviour
+            # (clobber) for backwards compatibility; only the streaming
+            # path fixes this.  Documented in the PR description.
+            if qid not in updates:
+                updates[qid] = {"responses": [], "log_probs": [], "logits": []}
+            updates[qid]["responses"].extend(responses)
+            updates[qid]["log_probs"].extend(log_probs)
+            updates[qid]["logits"].extend(logits)
+
+    return updates, [str(q) for q in qids]
+
+
+def stream_sampled_outputs(
+    data_root: Path,
+    years: List[int],
+    month: Optional[int],
+    model: str,
+    num_samples: int = 5,
+    filter_keys: Optional[Set[str]] = None,
+) -> Dict[str, List]:
+    """Streaming counterpart to ``load_sampled_outputs``.
+
+    Yields zero or more dicts of the same shape as the legacy return
+    value, but only the final yielded dict contains the full
+    accumulated state.  Use ``next(iter(stream_sampled_outputs(...)))``
+    to get the final result in a single call, matching the legacy
+    call pattern.
+
+    The streaming aspect is on the disk-read side (one batch at a
+    time) and on the per-batch filter side (drop unused sample keys
+    early).  Peak RAM is bounded by one batch at a time plus the
+    final accumulated dict (which is the same as the legacy
+    function's peak).
+
+    The streaming path also fixes a latent qid-clobbering bug in
+    the legacy function (where a question_id appearing in multiple
+    batches would be overwritten by the last batch's data instead
+    of having its samples accumulated).  See
+    ``_extract_qid_samples`` for the fix.
+    """
+    from .utils import iter_batch_outputs
+
+    model_slug = resolve_model_slug(model)
+    all_responses_by_qid: Dict[str, List[List[int]]] = {}
+    all_logprobs_by_qid: Dict[str, List[List[float]]] = {}
+    all_logits_by_qid: Dict[str, List[List[float]]] = {}
+    found_any = False
+
+    print(f"\nLoading sampled outputs for years (streaming): {years}")
+    for year in years:
+        _, _, dataset_slug = resolve_dataset_slug([year], month)
+        sampled_dir = data_root / dataset_slug / model_slug / "sampled_generation"
+
+        if not sampled_dir.exists():
+            print(f"  WARNING: {sampled_dir} not found, skipping year {year}")
+            continue
+
+        batch_files = sorted(sampled_dir.glob("sampled_outputs__batch_*.pt"))
+        if not batch_files:
+            print(f"  WARNING: No batch files in {sampled_dir}")
+            continue
+        found_any = True
+
+        print(f"  Streaming {len(batch_files)} batch files from year {year}")
+        for loaded in iter_batch_outputs(batch_files, filter_keys):
+            # The loaded dict is in production format: {key: [tensor, ...]}.
+            # Each list element is one batch's tensor.  Iterate per-batch
+            # to align with _extract_qid_samples (which expects a single
+            # batch's dict).
+            keys = list(loaded.keys())
+            if not keys:
+                continue
+            n_batches_in_file = len(loaded[keys[0]]) if isinstance(loaded[keys[0]], list) else 1
+            for b_idx in range(n_batches_in_file):
+                single_batch = {k: (loaded[k][b_idx] if isinstance(loaded[k], list) else loaded[k])
+                                for k in keys}
+                updates, _ = _extract_qid_samples(
+                    single_batch, num_samples, requested_years=years
+                )
+                for qid, parts in updates.items():
+                    if qid not in all_responses_by_qid:
+                        all_responses_by_qid[qid] = []
+                        all_logprobs_by_qid[qid] = []
+                        all_logits_by_qid[qid] = []
+                    all_responses_by_qid[qid].extend(parts["responses"])
+                    all_logprobs_by_qid[qid].extend(parts["log_probs"])
+                    all_logits_by_qid[qid].extend(parts["logits"])
+
+    if not found_any:
+        combined = _find_combined_dataset_dir(data_root, model_slug, years, month)
+        if combined is not None:
+            data_dir, dataset_years = combined
+            sampled_dir = data_dir / "sampled_generation"
+            if sampled_dir.exists():
+                print(
+                    f"  Using combined dataset: {data_dir.parent} "
+                    f"(covers years {dataset_years})"
+                )
+                batch_files = sorted(sampled_dir.glob("sampled_outputs__batch_*.pt"))
+                if batch_files:
+                    for loaded in iter_batch_outputs(batch_files, filter_keys):
+                        keys = list(loaded.keys())
+                        if not keys:
+                            continue
+                        n_batches_in_file = len(loaded[keys[0]]) if isinstance(loaded[keys[0]], list) else 1
+                        for b_idx in range(n_batches_in_file):
+                            single_batch = {k: (loaded[k][b_idx] if isinstance(loaded[k], list) else loaded[k])
+                                            for k in keys}
+                            updates, _ = _extract_qid_samples(
+                                single_batch, num_samples, requested_years=years
+                            )
+                            for qid, parts in updates.items():
+                                if qid not in all_responses_by_qid:
+                                    all_responses_by_qid[qid] = []
+                                    all_logprobs_by_qid[qid] = []
+                                    all_logits_by_qid[qid] = []
+                                all_responses_by_qid[qid].extend(parts["responses"])
+                                all_logprobs_by_qid[qid].extend(parts["log_probs"])
+                                all_logits_by_qid[qid].extend(parts["logits"])
 
     print(f"  Total questions with sampled data: {len(all_responses_by_qid)}")
     return {

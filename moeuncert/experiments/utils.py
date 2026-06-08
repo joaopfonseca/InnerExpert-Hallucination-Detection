@@ -2,7 +2,7 @@ import logging
 import numpy as np
 import torch
 from pathlib import Path
-from typing import List, Dict, Optional, Set, Union, Tuple
+from typing import Any, Iterator, List, Dict, Optional, Set, Union, Tuple
 from sklearn.metrics import roc_curve, roc_auc_score, average_precision_score, f1_score, accuracy_score
 
 logger = logging.getLogger(__name__)
@@ -168,6 +168,55 @@ def read_and_collate_outputs(
             skip_special_tokens=True,
         )
     return all_outputs
+
+
+def iter_batch_outputs(
+    file_list: Union[List[Path], List[str]],
+    filter_keys: Optional[Set[str]] = None,
+) -> Iterator[Dict[str, Any]]:
+    """Yield one batch at a time from a list of .pt files.
+
+    Each yielded dict is the per-batch contents as saved by
+    ``experiments/1.0-generate-answers.py`` (a flat dict of tensors /
+    lists, no cross-batch concatenation).  Use this in streaming
+    code paths where concatenating all batches into a single dict
+    would exceed host RAM.
+
+    Parameters
+    ----------
+    file_list : List[Path] or List[str]
+        Ordered list of .pt files to read.
+    filter_keys : Set[str], optional
+        If provided, drop any keys not in this set from each yielded
+        batch (after ``torch.load`` returns).  This releases RAM
+        between batches, but does NOT save disk-read time for
+        pickle-based .pt files (the whole file is materialised by
+        ``torch.load`` before we can filter).
+
+    Yields
+    ------
+    Dict[str, Any]
+        One batch's contents, filtered to ``filter_keys`` if provided.
+    """
+    for filepath in file_list:
+        batch_outputs: Dict[str, Any] = torch.load(filepath, map_location="cpu")
+        if filter_keys is not None:
+            unwanted = [k for k in batch_outputs.keys() if k not in filter_keys]
+            for k in unwanted:
+                del batch_outputs[k]
+        yield batch_outputs
+
+
+def _vm_rss_mb() -> float:
+    """Best-effort current process RSS in MB (Linux /proc/self/status)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    return float("nan")
 
 
 def get_quantization_kwargs(quantize: str) -> dict:
