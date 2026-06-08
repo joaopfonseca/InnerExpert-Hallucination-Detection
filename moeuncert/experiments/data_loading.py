@@ -150,6 +150,41 @@ def _normalize_question_ids(question_ids: List) -> List[str]:
     return flattened
 
 
+def _flatten_qid_tensors(question_ids: List) -> List:
+    """Flatten any torch.Tensor values in a question_id list to plain Python ints.
+
+    Production ``.pt`` files (written by ``experiments/1.0-generate-answers.py``
+    with the HF dataset's ``set_format(type="torch")``) store
+    ``question_id`` as a list of 0-d/1-d tensors (one tensor per batch
+    file, each tensor holds the qids of that batch as int64s).  This
+    helper turns that into a flat list of plain ints so the downstream
+    normaliser sees ``[202401050, 202401051, ...]`` instead of
+    ``[tensor([202401050, ...]), tensor([202405311, ...])]``.
+
+    Handles:
+      * 0-d tensor (``tensor(202401050)``) → ``[202401050]`` (single int)
+      * 1-d tensor (``tensor([q0, q1, ...])``) → ``[q0, q1, ...]``
+      * Nested lists of tensors / ints / strings → flattened
+      * String elements, plain ints → passed through unchanged
+    """
+    flat: List = []
+    for item in question_ids:
+        if isinstance(item, torch.Tensor):
+            # 0-d tensor: tolist() returns a single Python scalar (not
+            # a list), so iterate it directly.  1-d tensor: tolist()
+            # returns a list, iterate that.  n-d tensor: tolist() returns
+            # nested lists, iterate the outer level.
+            if item.dim() == 0:
+                flat.append(int(item.item()))
+            else:
+                flat.extend(int(x) for x in item.tolist())
+        elif isinstance(item, (list, tuple)):
+            flat.extend(item)
+        else:
+            flat.append(item)
+    return flat
+
+
 def _ensure_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure year/month columns exist using question_id as primary source.
 
@@ -190,7 +225,23 @@ def _align_df_with_outputs(
     df: pd.DataFrame,
     outputs: Dict[str, torch.Tensor],
 ) -> Tuple[pd.DataFrame, Dict[str, torch.Tensor]]:
-    """Align labeled dataframe with available model outputs by question_id."""
+    """Align labeled dataframe with available model outputs by question_id.
+
+    Primary strategy: filter ``df`` to rows whose ``question_id`` appears
+    in ``outputs["question_id"]`` (and filter ``outputs`` to keep only
+    those qids, in the order they appear in ``df``).
+
+    Fallback strategy: if qid sets do not overlap at all (e.g. the
+    labeled parquet was regenerated with different data than the .pt
+    files, or qid normalisation differs), fall back to *positional*
+    alignment: assume ``outputs[i]`` corresponds to ``df.iloc[i]``.
+    This is the safest assumption because both 1.0-generate-answers.py
+    and 2.0-make-labels.py write rows in the same iteration order over
+    the source HF dataset, so the i-th labeled row is the i-th model
+    output *if and only if* both phases ran on the same data.  We log
+    a clear WARNING showing the first few qids from each side so the
+    user can spot inconsistencies at a glance.
+    """
     if "question_id" not in outputs or "question_id" not in df.columns:
         return df, outputs
 
@@ -206,14 +257,51 @@ def _align_df_with_outputs(
     df_qids = df["question_id"]
     missing_mask = ~df_qids.isin(output_qids)
     missing_count = int(missing_mask.sum())
+    matched_count = len(df) - missing_count
+
+    if matched_count == 0 and missing_count > 0:
+        # Fall back to positional alignment.  This can happen when the
+        # labeled parquet and the .pt files were generated from
+        # different data (e.g. the user re-ran 2.0 with a newer
+        # realtimeqa_original.parquet that has different questions than
+        # what 1.0 used to generate the .pt files).  In that case, qid
+        # intersection is empty but row ordering is still preserved.
+        n_outputs = len(_normalize_question_ids(outputs["question_id"]))
+        n_df = len(df)
+        if n_outputs != n_df:
+            raise ValueError(
+                f"qid alignment failed: 0 qids match between labeled "
+                f"dataframe ({n_df} rows) and model outputs ({n_outputs} "
+                f"rows), and lengths differ so positional alignment is "
+                f"unsafe.  Sample labeled qids: {df_qids.iloc[:3].tolist()}. "
+                f"Sample output qids: "
+                f"{_normalize_question_ids(outputs['question_id'])[:3]}. "
+                f"Re-generate 1.0 / 2.0 with consistent data, or check "
+                f"for stale .pt files in the data dir."
+            )
+        print(
+            f"  WARNING: 0 qid matches between labeled dataframe and model "
+            f"outputs ({n_df} rows each).  Falling back to POSITIONAL "
+            f"alignment (outputs[i] ↔ df.iloc[i])."
+        )
+        print(
+            f"    Sample labeled qids: {df_qids.iloc[:3].tolist()}"
+        )
+        print(
+            f"    Sample output qids:  "
+            f"{_normalize_question_ids(outputs['question_id'])[:3]}"
+        )
+        print(
+            f"    If these are unrelated, regenerate 1.0 and 2.0 on "
+            f"the same source data to fix alignment."
+        )
+        return df, outputs
+
     if missing_count:
         print(
             f"  WARNING: Dropping {missing_count} labeled rows without model outputs"
         )
         df = df.loc[~missing_mask].copy()
-
-    if df.empty:
-        raise ValueError("No labeled rows remain after aligning with model outputs.")
 
     outputs = _filter_outputs_by_question_ids(outputs, df["question_id"].tolist())
     return df, outputs
@@ -875,6 +963,13 @@ def _load_year_outputs_streaming(
                         part[k] = []
                     part[k].append(v)
         if "question_id" in part:
+            # Production .pt files store question_id as a list of
+            # 0-d/1-d tensors (one per batch, each tensor = qids of that
+            # batch).  ``_normalize_question_ids`` would otherwise
+            # stringify the whole tensor (e.g. ``"tensor([N, N, ...])"``)
+            # which never matches the labeled parquet.  Flatten any
+            # tensor values to plain ints first.
+            part["question_id"] = _flatten_qid_tensors(part["question_id"])
             part["question_id"] = _normalize_question_ids(part["question_id"])
         n = len(part.get("question_id", []))
         if n == 0:
@@ -902,9 +997,17 @@ def _concat_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
     across parts (so part A's batches come before part B's batches) and
     then ``torch.cat`` the tensor values, padding to max size in each
     dim (mirrors ``read_and_collate_outputs``).
+
+    Iterates the *union* of all keys across parts (not just
+    ``parts[0].keys()``) so that evidence-only or base-only keys
+    (e.g. ``perplexity`` if ``return_baseline_features`` was set for
+    one phase but not the other) are preserved.
     """
     combined: Dict[str, Any] = {}
-    for key in parts[0].keys():
+    all_keys: set = set()
+    for p in parts:
+        all_keys.update(p.keys())
+    for key in sorted(all_keys):
         # Flatten the per-part lists into a single list of tensors.
         flat: List = []
         for p in parts:
@@ -952,12 +1055,24 @@ def _extract_qid_samples(
 
     The streaming version of ``load_sampled_outputs`` calls this once
     per yielded batch; the caller accumulates across batches.
+
+    Contract for ``batch`` (normalised by ``_normalize_sampled_batch``):
+      * ``question_id``: flat list of N strings
+      * ``sequences_sampleS``: 2-d long tensor of shape (N, seq_len)
+      * ``log_likelihoods_sampleS``: 2-d tensor of shape (N, gen_len)
+      * ``scores_sampleS``: 3-d tensor of shape (N, gen_len, vocab)
+
+    For defensive safety, ``question_id`` is normalised internally
+    to a flat list of strings in case the caller skipped
+    ``_normalize_sampled_batch`` (e.g. legacy callers).
     """
-    qids = batch.get("question_id", [])
+    qids_raw = batch.get("question_id", [])
+    if not isinstance(qids_raw, list):
+        qids_raw = [qids_raw]
+    qids = _normalize_question_ids(_flatten_qid_tensors(qids_raw))
     updates: Dict[str, List] = {}
 
-    for idx, raw_qid in enumerate(qids):
-        qid = _normalize_question_id_value(raw_qid)
+    for idx, qid in enumerate(qids):
         if requested_years is not None:
             qid_year = int(qid[:4]) if len(qid) >= 4 and qid[:4].isdigit() else None
             if qid_year is not None and qid_year not in requested_years:
@@ -1006,7 +1121,56 @@ def _extract_qid_samples(
             updates[qid]["log_probs"].extend(log_probs)
             updates[qid]["logits"].extend(logits)
 
-    return updates, [str(q) for q in qids]
+    return updates, qids
+
+
+def _normalize_sampled_batch(loaded: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a single .pt file's contents to the shape
+    ``_extract_qid_samples`` expects.
+
+    Production sampled_generation .pt files come in two shapes:
+
+    Format A (1.0-style): ``{question_id: [t_b0], sequences_sample0:
+      [tensor_b0], ...}`` where ``t_b0`` is a 1-d int64 tensor of N
+      qids, and ``tensor_b0`` is a 2-d tensor of shape ``(N, ...)``.
+
+    Format B (1.1-style, the user's data): ``{question_id: [q0, q1,
+      ...], sequences_sample0: [tensor_b0], ...}`` where
+      ``question_id`` is a flat list of N items (each a 0-d int64
+      tensor or plain int) and ``tensor_b0`` is a 2-d tensor of
+      shape ``(N, ...)``.
+
+    We normalise to:
+      * ``question_id``: flat list of N plain ints/strings.
+      * ``<tensor_key>``: 2-d (or higher-d) tensor of shape ``(N, ...)``.
+
+    The outer list wrapper is unwrapped (one .pt file = one saved
+    batch, so the list always has length 1 in production).
+    """
+    normalised: Dict[str, Any] = {}
+    for k, v in loaded.items():
+        if k == "question_id":
+            # Could be Format A ``[1-d tensor]`` or Format B
+            # ``[q0, q1, ...]``.  Unwrap the list, then flatten tensors.
+            if isinstance(v, list):
+                inner = _flatten_qid_tensors(v)
+            else:
+                inner = _flatten_qid_tensors([v])
+            normalised[k] = _normalize_question_ids(inner)
+        elif isinstance(v, list):
+            # Tensor keys: list of 1 tensor (one saved batch per file).
+            # Just take the first tensor; if the file ever has multiple
+            # saved batches, we'd need to iterate, but production doesn't.
+            if len(v) == 1:
+                normalised[k] = v[0]
+            elif len(v) > 1:
+                # Defensive: concat along dim 0 to handle multi-batch files.
+                normalised[k] = torch.cat(v, dim=0)
+            else:
+                normalised[k] = v
+        else:
+            normalised[k] = v
+    return normalised
 
 
 def stream_sampled_outputs(
@@ -1036,6 +1200,17 @@ def stream_sampled_outputs(
     batches would be overwritten by the last batch's data instead
     of having its samples accumulated).  See
     ``_extract_qid_samples`` for the fix.
+
+    Per-file format note: sampled_generation .pt files (written by
+    ``1.1-generate-baseline-samples.py``) have
+    ``{question_id: [q0, q1, ...], sequences_sample0: [tensor_b0],
+    log_likelihoods_sample0: [tensor_b0], ...}`` — i.e. ``question_id``
+    is a list of N items (one per question in the batch) but tensor
+    keys have a list of M=1 tensors (one tensor per saved batch, since
+    one .pt file = one saved batch).  In contrast, base+evidence .pt
+    files (1.0) have ``{question_id: [tensor_b0], ...}`` where the
+    tensor itself has shape ``(N,)`` (N = questions in the batch).  We
+    handle both formats in ``_normalize_sampled_batch``.
     """
     from .utils import iter_batch_outputs
 
@@ -1062,28 +1237,20 @@ def stream_sampled_outputs(
 
         print(f"  Streaming {len(batch_files)} batch files from year {year}")
         for loaded in iter_batch_outputs(batch_files, filter_keys):
-            # The loaded dict is in production format: {key: [tensor, ...]}.
-            # Each list element is one batch's tensor.  Iterate per-batch
-            # to align with _extract_qid_samples (which expects a single
-            # batch's dict).
-            keys = list(loaded.keys())
-            if not keys:
-                continue
-            n_batches_in_file = len(loaded[keys[0]]) if isinstance(loaded[keys[0]], list) else 1
-            for b_idx in range(n_batches_in_file):
-                single_batch = {k: (loaded[k][b_idx] if isinstance(loaded[k], list) else loaded[k])
-                                for k in keys}
-                updates, _ = _extract_qid_samples(
-                    single_batch, num_samples, requested_years=years
-                )
-                for qid, parts in updates.items():
-                    if qid not in all_responses_by_qid:
-                        all_responses_by_qid[qid] = []
-                        all_logprobs_by_qid[qid] = []
-                        all_logits_by_qid[qid] = []
-                    all_responses_by_qid[qid].extend(parts["responses"])
-                    all_logprobs_by_qid[qid].extend(parts["log_probs"])
-                    all_logits_by_qid[qid].extend(parts["logits"])
+            # Normalise to the shape ``_extract_qid_samples`` expects.
+            # See ``_normalize_sampled_batch`` for the per-key rules.
+            single_batch = _normalize_sampled_batch(loaded)
+            updates, _ = _extract_qid_samples(
+                single_batch, num_samples, requested_years=years
+            )
+            for qid, parts in updates.items():
+                if qid not in all_responses_by_qid:
+                    all_responses_by_qid[qid] = []
+                    all_logprobs_by_qid[qid] = []
+                    all_logits_by_qid[qid] = []
+                all_responses_by_qid[qid].extend(parts["responses"])
+                all_logprobs_by_qid[qid].extend(parts["log_probs"])
+                all_logits_by_qid[qid].extend(parts["logits"])
 
     if not found_any:
         combined = _find_combined_dataset_dir(data_root, model_slug, years, month)
@@ -1098,24 +1265,18 @@ def stream_sampled_outputs(
                 batch_files = sorted(sampled_dir.glob("sampled_outputs__batch_*.pt"))
                 if batch_files:
                     for loaded in iter_batch_outputs(batch_files, filter_keys):
-                        keys = list(loaded.keys())
-                        if not keys:
-                            continue
-                        n_batches_in_file = len(loaded[keys[0]]) if isinstance(loaded[keys[0]], list) else 1
-                        for b_idx in range(n_batches_in_file):
-                            single_batch = {k: (loaded[k][b_idx] if isinstance(loaded[k], list) else loaded[k])
-                                            for k in keys}
-                            updates, _ = _extract_qid_samples(
-                                single_batch, num_samples, requested_years=years
-                            )
-                            for qid, parts in updates.items():
-                                if qid not in all_responses_by_qid:
-                                    all_responses_by_qid[qid] = []
-                                    all_logprobs_by_qid[qid] = []
-                                    all_logits_by_qid[qid] = []
-                                all_responses_by_qid[qid].extend(parts["responses"])
-                                all_logprobs_by_qid[qid].extend(parts["log_probs"])
-                                all_logits_by_qid[qid].extend(parts["logits"])
+                        single_batch = _normalize_sampled_batch(loaded)
+                        updates, _ = _extract_qid_samples(
+                            single_batch, num_samples, requested_years=years
+                        )
+                        for qid, parts in updates.items():
+                            if qid not in all_responses_by_qid:
+                                all_responses_by_qid[qid] = []
+                                all_logprobs_by_qid[qid] = []
+                                all_logits_by_qid[qid] = []
+                            all_responses_by_qid[qid].extend(parts["responses"])
+                            all_logprobs_by_qid[qid].extend(parts["log_probs"])
+                            all_logits_by_qid[qid].extend(parts["logits"])
 
     print(f"  Total questions with sampled data: {len(all_responses_by_qid)}")
     return {
