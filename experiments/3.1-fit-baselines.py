@@ -267,6 +267,10 @@ def fit_llm_check(
     elif score_type == "perplexity":
         # Answer-level directly — aggregation parameter is a no-op here
         # (perplexity is pre-computed by compute_metrics when return_baseline_features=True)
+        if "perplexity" not in outputs:
+            print(f"  WARNING: 'perplexity' not in outputs (requires --return-baseline-features at generation). Skipping.")
+            return {"threshold": None, "aggregation": aggregation,
+                    "note": "perplexity not in outputs"}
         perplexities = outputs['perplexity']  # (n_samples,)
 
         mask = np.array([qid in qid_to_label for qid in qids])
@@ -275,15 +279,21 @@ def fit_llm_check(
 
         threshold, f1 = optimal_threshold(matched_labels, matched_perplexities)
         auroc = roc_auc_score(matched_labels, matched_perplexities) if len(np.unique(matched_labels)) > 1 else 0.5
-        
+
+        print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+
         return {
             "threshold": float(threshold),
             "aggregation": aggregation,
             "auroc": float(auroc),
         }
-    
+
     elif score_type == "entropy":
         # Per-token entropy (pre-computed top-k entropy), aggregate to answer
+        if "scores_entropy" not in outputs:
+            print(f"  WARNING: 'scores_entropy' not in outputs. Skipping.")
+            return {"threshold": None, "aggregation": aggregation,
+                    "note": "scores_entropy not in outputs"}
         entropies = outputs['scores_entropy']  # (n_samples, seq_len)
 
         unique_qids, agg_scores = aggregate_token_to_answer(
@@ -299,9 +309,12 @@ def fit_llm_check(
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
         auroc = roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
 
+        print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
+
         return {
             "threshold": float(threshold),
             "aggregation": aggregation,
+            "auroc": float(auroc),
         }
 
 
