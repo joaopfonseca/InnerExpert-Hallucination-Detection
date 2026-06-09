@@ -19,13 +19,13 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--model",
     type=str,
-    default="allenai/OLMoE-1B-7B-0924-Instruct",
-    help="HuggingFace model name (default: allenai/OLMoE-1B-7B-0924-Instruct)",
+    default="google/gemma-4-26B-A4B-it",
+    help="HuggingFace model name (default: google/gemma-4-26B-A4B-it)",
 )
 parser.add_argument(
     "--quantize",
     type=str,
-    default="16-bit",
+    default="8-bit",
     choices=["16-bit", "8-bit", "4-bit"],
     help="Quantization level for the model."
 )
@@ -52,7 +52,7 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
     **quantization_kwargs,
 )
-model_monitor = MoEMonitor(model=model, tokenizer=tokenizer, output_router_logits=False)
+model_monitor = MoEMonitor(model=model, tokenizer=tokenizer)
 
 questions_tokenized = tokenize_realtimeqa(
     tokenizer, question_sample.to_frame().T, with_evidence="both"
