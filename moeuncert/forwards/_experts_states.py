@@ -66,8 +66,6 @@ def modify_model(model):
     MoE blocks. Dispatches to the correct forward based on each block's
     concrete class.
     """
-    modify_model_forward_method(model)
-
     # Walk the model with parent context. For each MoE block, find the host
     # layer and register a pre-forward hook that stashes the layer's input
     # shape on the MoE block. This lets the patched MoE forward produce
@@ -157,41 +155,6 @@ def _uninstall_parent_shape_capture(moe_block):
         delattr(moe_block, "_shape_capture_hook")
 
 
-def modify_model_forward_method(model):
-    """
-    Wrap the model's forward method to collect expert hidden states after each call.
-
-    Stored as a plain function (not types.MethodType) so nn.Module.__call__ invokes
-    it without double-binding. The original forward (accelerate hook) is captured
-    as a bound method in the closure.
-    """
-    model._original_forward_custom = model.forward
-    orig_forward = model._original_forward_custom
-
-    def new_forward(*args, **kwargs):
-        outputs = orig_forward(*args, **kwargs)
-        # Collect last_experts_hidden from every MoE block in the model.
-        # Works for both OLMoE (layers[i].mlp) and Gemma 4
-        # (layers[i].experts) — both expose `last_experts_hidden` after the
-        # block-level forward has run.
-        experts_hidden_list = []
-        for module in model.modules():
-            if is_moe_block(module) and hasattr(module, "last_experts_hidden"):
-                experts_hidden_list.append(module.last_experts_hidden)
-        if experts_hidden_list:
-            # Only attach if `outputs` is dict-like (e.g., a ModelOutput
-            # dataclass or a plain dict). The original code already handled
-            # plain dicts; this guard also covers dataclass outputs.
-            if isinstance(outputs, dict) or hasattr(outputs, "__setitem__"):
-                try:
-                    outputs["experts_hidden"] = experts_hidden_list
-                except (TypeError, KeyError):
-                    pass
-        return outputs
-
-    model.forward = new_forward
-
-
 def modify_moe_block(moe_block):
     """
     Replace the MoE block's forward method with the architecture-specific
@@ -223,10 +186,6 @@ def reset_model(model):
     """
     Reset the modifications made to the model by `modify_model`.
     """
-    if hasattr(model, "_original_forward_custom"):
-        model.forward = model._original_forward_custom
-        del model._original_forward_custom
-
     for module in model.modules():
         if is_moe_block(module):
             reset_moe_block(module)
