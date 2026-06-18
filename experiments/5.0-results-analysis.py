@@ -261,6 +261,24 @@ def _aggregate_token_to_answer(
         raise ValueError(f"Unknown aggregation: {agg}")
 
 
+def _ours_method_to_pred_fn(method: str) -> Optional[str]:
+    """Map an ``Ours-<Family> (mean|max)`` answer-level method name to its
+    ``detector_<Family>.parquet`` prediction file.
+
+    Returns ``None`` if *method* is not an ``Ours-`` method.  The family name
+    is everything between the ``Ours-`` prefix and the `` (mean)`` / `` (max)``
+    aggregation suffix.
+    """
+    if not method.startswith("Ours-"):
+        return None
+    family = method[len("Ours-"):]
+    for suffix in (" (mean)", " (max)"):
+        if family.endswith(suffix):
+            family = family[: -len(suffix)]
+            break
+    return f"detector_{family}.parquet"
+
+
 # ---------------------------------------------------------------------------
 # Main analysis
 # ---------------------------------------------------------------------------
@@ -373,14 +391,27 @@ def analyse(
                 _eval_token_level(llm_df, gt_token, score_type),
             )
 
-    # MoE Detector (per-token → answer-level mean)
-    det_df = _load_prediction_df(predictions_dir, "detector.parquet", ["question_id", "token_position", "score"])
-    if det_df is not None:
+    # MoE Detector — every candidate family (per-token → answer-level mean/max)
+    for det_path in sorted(predictions_dir.glob("detector_*.parquet")):
+        det_df = _load_prediction_df(
+            predictions_dir, det_path.name,
+            ["question_id", "token_position", "score"],
+        )
+        if det_df is None:
+            continue
+        family = det_path.stem[len("detector_"):]
+        thr = _thr(f"detector_{family}")
         agg_df = _aggregate_token_to_answer(det_df, "score", "mean")
-        answer_results["Ours (mean)"] = ("answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=_thr("detector")))
+        answer_results[f"Ours-{family} (mean)"] = (
+            "answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=thr)
+        )
         agg_df = _aggregate_token_to_answer(det_df, "score", "max")
-        answer_results["Ours (max)"] = ("answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=_thr("detector")))
-        token_results["Ours"] = ("token", _eval_token_level(det_df, gt_token, "score"))
+        answer_results[f"Ours-{family} (max)"] = (
+            "answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=thr)
+        )
+        token_results[f"Ours-{family}"] = (
+            "token", _eval_token_level(det_df, gt_token, "score")
+        )
 
     # ------------------------------------------------------------------
     # 3. Build comparison tables
@@ -481,8 +512,8 @@ def analyse(
             pred_fn = "predictive_entropy.parquet"
         elif method.startswith("LLM-Check-"):
             pred_fn = "llm_check.parquet"
-        elif method.startswith("Ours ("):
-            pred_fn = "detector.parquet"
+        elif method.startswith("Ours-"):
+            pred_fn = _ours_method_to_pred_fn(method)
 
         if pred_fn is None:
             continue
@@ -502,11 +533,9 @@ def analyse(
         }.get(method, "score")
 
         # Handle aggregation for token-level methods
-        if method.startswith(("PredictiveEntropy-", "Ours (", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-")):
+        if method.startswith(("PredictiveEntropy-", "Ours-", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-")):
             # Need to extract aggregation
-            if "-mean" in method:
-                agg = "mean"
-            elif "-max" in method:
+            if method.endswith("(max)") or "-max" in method:
                 agg = "max"
             else:
                 agg = "mean"
@@ -564,8 +593,8 @@ def analyse(
                 pred_fn = "predictive_entropy.parquet"
             elif method.startswith("LLM-Check-"):
                 pred_fn = "llm_check.parquet"
-            elif method.startswith("Ours ("):
-                pred_fn = "detector.parquet"
+            elif method.startswith("Ours-"):
+                pred_fn = _ours_method_to_pred_fn(method)
 
             if pred_fn is None:
                 continue
@@ -585,11 +614,11 @@ def analyse(
             }.get(method, "score")
 
             # Handle aggregation for token-level methods
-            if method.startswith(("PredictiveEntropy-", "Ours (", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-")):
-                if "-mean" in method:
-                    pred_df = _aggregate_token_to_answer(pred_df, score_col, "mean")
-                elif "-max" in method:
+            if method.startswith(("PredictiveEntropy-", "Ours-", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-")):
+                if method.endswith("(max)") or "-max" in method:
                     pred_df = _aggregate_token_to_answer(pred_df, score_col, "max")
+                else:
+                    pred_df = _aggregate_token_to_answer(pred_df, score_col, "mean")
             elif method == "LLM-Check-perplexity":
                 pred_df = pred_df[["question_id", "perplexity_score"]].groupby("question_id", as_index=False).first()
 
@@ -807,23 +836,36 @@ def main():
                 thresholds["halunet"] = {"threshold": float(halunet_thr)}
                 print(f"  Also loaded HaluNet threshold: {halunet_thr}")
 
-        # Detector threshold is stored inside detector.pkl
-        detector_path = models_dir / "detector.pkl"
-        if detector_path.exists():
+        # Detector thresholds are stored inside the detector pickles.
+        # Load the overall-best detector.pkl plus every per-family
+        # detector_<Family>.pkl written by 3.0-detection-model-training.py.
+        sys.path.append(str(Path(__file__).parent.parent))
+        from moeuncert.experiments import replace_inf_with_nan
+        # Backward-compat alias so pickles trained before _replace_inf_with_nan
+        # moved to moeuncert.experiments.utils can still resolve the function.
+        sys.modules["__main__"]._replace_inf_with_nan = replace_inf_with_nan
+
+        detector_paths = [models_dir / "detector.pkl"]
+        detector_paths += sorted(models_dir.glob("detector_*.pkl"))
+        for detector_path in detector_paths:
+            if not detector_path.exists():
+                continue
             try:
-                # Need backward-compat alias so pickle can resolve the function
-                sys.path.append(str(Path(__file__).parent.parent))
-                from moeuncert.experiments import replace_inf_with_nan
-                sys.modules["__main__"]._replace_inf_with_nan = replace_inf_with_nan
                 with open(detector_path, "rb") as f:
                     detector = pickle.load(f)
-                det_thr = detector.get("optimal_threshold")
-                if det_thr is not None:
-                    thresholds = dict(thresholds)
-                    thresholds["detector"] = {"threshold": float(det_thr)}
-                    print(f"  Also loaded detector threshold: {det_thr}")
             except Exception as e:
-                print(f"  WARNING: Could not load detector.pkl: {e}")
+                print(f"  WARNING: Could not load {detector_path.name}: {e}")
+                continue
+            det_thr = detector.get("optimal_threshold")
+            if det_thr is None:
+                continue
+            if detector_path.stem.startswith("detector_"):
+                key = f"detector_{detector_path.stem[len('detector_'):]}"
+            else:
+                key = "detector"
+            thresholds = dict(thresholds)
+            thresholds[key] = {"threshold": float(det_thr)}
+            print(f"  Also loaded {key} threshold: {det_thr}")
     elif args.thresholds_file is not None:
         print(f"WARNING: thresholds file not found: {args.thresholds_file}")
 

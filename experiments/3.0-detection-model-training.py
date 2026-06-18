@@ -564,6 +564,7 @@ if __name__ == "__main__":
     print(f"{'=' * 70}")
 
     results = {}
+    estimators = {}
     best_model_name = None
     best_val_f1 = 0.0
     best_estimator = None
@@ -614,6 +615,7 @@ if __name__ == "__main__":
             "val_metrics": opt_metrics,
             "optimal_threshold": float(opt_threshold),
         }
+        estimators[name] = best
 
         # Track best model by F1 on validation
         if opt_metrics['f1'] > best_val_f1:
@@ -640,7 +642,23 @@ if __name__ == "__main__":
             "model_name": best_model_name,
             "train_years": args.train_years,
         }, f)
-    print(f"Saved model to: {model_path}")
+    print(f"Saved best model to: {model_path}")
+
+    # Save every candidate family's best estimator so 4.0/5.0 can score and
+    # report each one individually. ``detector.pkl`` (above) stays as the
+    # overall-best alias for pipeline pre-flight / skip checks.
+    for name, estimator in estimators.items():
+        family_path = save_dir / f"detector_{name}.pkl"
+        with open(family_path, "wb") as f:
+            pickle.dump({
+                "model": estimator,
+                "feature_names": feature_names,
+                "scale_features": scale_features,
+                "optimal_threshold": results[name]["optimal_threshold"],
+                "model_name": name,
+                "train_years": args.train_years,
+            }, f)
+        print(f"Saved {name} detector to: {family_path}")
 
     # Save validation results
     results_path = save_dir / "val_results.json"
@@ -658,6 +676,15 @@ if __name__ == "__main__":
         "val_hallucination_rate": float(y_val.mean()),
         "n_features": len(feature_names),
         "feature_names": feature_names,
+        "detectors": [
+            {
+                "family": name,
+                "val_f1": results[name]["val_metrics"]["f1"],
+                "optimal_threshold": results[name]["optimal_threshold"],
+                "is_best": name == best_model_name,
+            }
+            for name in model_configs
+        ],
     }
     summary_path = save_dir / "train_summary.json"
     with open(summary_path, "w") as f:

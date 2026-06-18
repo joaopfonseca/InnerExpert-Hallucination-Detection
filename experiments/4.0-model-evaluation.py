@@ -809,17 +809,29 @@ def main():
     print(f"  Saved {path} ({len(llm_df)} rows)")
 
     # -----------------------------------------------------------------------
-    # Our Detector
+    # Our Detector (every candidate family from 3.0)
     # -----------------------------------------------------------------------
     print("\n[3/7] MoE Detector ...")
-    detector_path = args.models_dir / model_slug / "detector.pkl"
-    if detector_path.exists():
-        det_df = evaluate_detector(outputs, df_labeled, detector_path)
+    models_subdir = args.models_dir / model_slug
+    detector_pickles = sorted(models_subdir.glob("detector_*.pkl"))
+    if not detector_pickles:
+        print(f"  SKIPPED — no detector_*.pkl found in {models_subdir}")
+    else:
+        for detector_path in detector_pickles:
+            family = detector_path.stem[len("detector_"):]
+            det_df = evaluate_detector(outputs, df_labeled, detector_path)
+            path = predictions_dir / f"detector_{family}.parquet"
+            det_df.to_parquet(path, index=False)
+            print(f"  Saved {path} ({len(det_df)} rows)")
+
+    # Backward-compat: also emit the canonical detector.parquet from the
+    # overall-best detector.pkl so any existing consumer keeps working.
+    best_detector_path = models_subdir / "detector.pkl"
+    if best_detector_path.exists():
+        det_df = evaluate_detector(outputs, df_labeled, best_detector_path)
         path = predictions_dir / "detector.parquet"
         det_df.to_parquet(path, index=False)
-        print(f"  Saved {path} ({len(det_df)} rows)")
-    else:
-        print(f"  SKIPPED — detector.pkl not found at {detector_path}")
+        print(f"  Saved {path} ({len(det_df)} rows) [best-family alias]")
 
     # -----------------------------------------------------------------------
     # HaluNet
