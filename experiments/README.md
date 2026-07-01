@@ -125,7 +125,8 @@ The easiest way to run the full workflow is via the two shell pipelines in this 
 - Labels the data with an LLM-as-judge (`zai-org/GLM-5.1` on DeepInfra by default)
 - Trains the MoE detector, fits baseline thresholds, and trains HaluNet
 - Saves artefacts to `models/<model_slug>/`:
-  - `detector.pkl` – trained MoE detector
+  - `detector_<Family>.pkl` – best estimator per candidate family (`LogisticRegression`, `RandomForest`, `XGBoost`, `MLP`), scored & reported individually by `4.0` / `5.0`
+  - `detector.pkl` – overall-best family alias (kept for pipeline checks / backward compat)
   - `thresholds.json` – tuned thresholds for baselines
   - `halunet.pt` – trained HaluNet checkpoint
 
@@ -230,7 +231,8 @@ data/
         ├── predictions/                    # 4.0 per-method predictions
         │   ├── predictive_entropy.parquet
         │   ├── llm_check.parquet
-        │   ├── detector.parquet
+        │   ├── detector_<Family>.parquet   # One per detector family (3.0)
+        │   ├── detector.parquet            # Best-family alias (kept for compat)
         │   ├── halunet.parquet
         │   ├── semantic_uncertainty.parquet
         │   ├── semantic_energy.parquet
@@ -245,7 +247,11 @@ data/
 
 models/
 └── {model_slug}/
-    ├── detector.pkl                    # Trained MoE detector (3.0)
+    ├── detector_<Family>.pkl          # Best estimator per candidate family (3.0):
+    │                                  #   LogisticRegression, RandomForest,
+    │                                  #   XGBoost, MLP — each scored & reported
+    │                                  #   individually by 4.0 / 5.0
+    ├── detector.pkl                    # Overall-best family alias (3.0, for compat)
     ├── thresholds.json                 # Tuned baseline thresholds (3.1)
     ├── halunet.pt                      # HaluNet checkpoint (3.2)
     ├── halunet_train_summary.json
