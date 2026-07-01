@@ -519,7 +519,7 @@ if __name__ == "__main__":
 
     model_configs = {
         "LogisticRegression": {
-            "model": LogisticRegression(max_iter=2000, random_state=args.seed),
+            "model": LogisticRegression(max_iter=10000, random_state=args.seed),
             "param_grid": {
                 "clf__C": [0.01, 0.1, 1.0, 10.0],
             },
