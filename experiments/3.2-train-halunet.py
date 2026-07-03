@@ -37,6 +37,7 @@ from moeuncert.baselines import HaluNet
 from moeuncert.experiments import (
     resolve_model_slug,
     resolve_dataset_slug,
+    resolve_cache_dir,
     load_multi_year_data,
     stream_multi_year_data,
     stratified_group_split,
@@ -242,6 +243,10 @@ def main():
         "question_id", "sequences", "input_ids",
     }
     print("\nLoading training data (streaming, filtered to HaluNet keys)...")
+    from transformers import AutoTokenizer
+    _load_tokenizer = AutoTokenizer.from_pretrained(
+        args.model, cache_dir=str(resolve_cache_dir(args.model))
+    )
     per_year_dfs: List[pd.DataFrame] = []
     per_year_outputs: List[Dict] = []
     for df, outputs, _data_dir in stream_multi_year_data(
@@ -251,6 +256,7 @@ def main():
         args.model,
         args.label_model,
         filter_keys=halunet_keys,
+        pad_token_id=_load_tokenizer.pad_token_id,
     ):
         per_year_dfs.append(df)
         per_year_outputs.append(outputs)
@@ -259,7 +265,7 @@ def main():
     if len(per_year_outputs) == 1:
         outputs = per_year_outputs[0]
     else:
-        outputs = _concat_parts(per_year_outputs)
+        outputs = _concat_parts(per_year_outputs, pad_token_id=_load_tokenizer.pad_token_id)
     del per_year_dfs, per_year_outputs
 
     # Extract HaluNet features

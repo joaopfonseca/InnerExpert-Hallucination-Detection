@@ -41,10 +41,9 @@ def find_generation_boundaries(
         if torch.any(non_pad_mask) else len(input_ids)
     )
 
-    non_zero_mask = input_ids != 0
     input_content_end = (
-        torch.where(non_zero_mask)[0][-1].item() + 1
-        if torch.any(non_zero_mask) else 0
+        torch.where(non_pad_mask)[0][-1].item() + 1
+        if torch.any(non_pad_mask) else 0
     )
 
     seq_non_pad_mask = sequences != pad_token
@@ -74,7 +73,8 @@ def find_generation_boundaries(
 def read_and_collate_outputs(
     file_list: Union[List[Path], List[str]], 
     tokenizer=None, 
-    get_keys: Optional[Set[str]] = None
+    get_keys: Optional[Set[str]] = None,
+    pad_token_id: Optional[int] = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Read saved batch outputs and collate into a single dictionary of tensors.
@@ -93,6 +93,12 @@ def read_and_collate_outputs(
     get_keys : Set[str], optional
         If provided, only load these keys from batch files. Note: if 'generated_answer'
         is requested, 'sequences' and 'input_ids' are automatically included.
+    pad_token_id : int, optional
+        Pad token id for cross-batch padding of ``sequences`` and ``input_ids``
+        when ``tokenizer`` is None. If both ``tokenizer`` and ``pad_token_id``
+        are provided, ``tokenizer.pad_token_id`` takes precedence. Defaults to
+        ``0`` when neither is supplied (preserves legacy behaviour for callers
+        that have not been updated).
     
     Returns
     -------
@@ -146,9 +152,12 @@ def read_and_collate_outputs(
             # Pad to max size in each dimension before concatenating (e.g. variable
             # generation lengths across batches when early stopping occurs)
             max_sizes = [max(v.shape[d] for v in value) for d in range(value[0].dim())]
-            pad_value = 0
             if tokenizer is not None and key in ("sequences", "input_ids"):
                 pad_value = tokenizer.pad_token_id
+            elif pad_token_id is not None and key in ("sequences", "input_ids"):
+                pad_value = pad_token_id
+            else:
+                pad_value = 0
             padded = []
             for t in value:
                 pad_cfg = []

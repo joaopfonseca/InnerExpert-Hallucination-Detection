@@ -446,22 +446,23 @@ if __name__ == "__main__":
     # Load multi-year data
     # =========================================================================
 
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        cache_dir=str(resolve_cache_dir(args.model)),
+    )
+
     df_labeled, all_outputs, _ = load_multi_year_data(
         args.data_root,
         args.train_years,
         args.month,
         args.model,
         args.label_model,
+        pad_token_id=tokenizer.pad_token_id,
     )
 
     # =========================================================================
     # Prepare token-level features and labels
     # =========================================================================
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model,
-        cache_dir=str(resolve_cache_dir(args.model)),
-    )
 
     features, labels = prepare_training_data(
         df_labeled,

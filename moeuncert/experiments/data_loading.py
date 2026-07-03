@@ -342,7 +342,7 @@ def load_labeled_dataset(
     return df
 
 
-def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
+def load_model_outputs(data_dir: Path, pad_token_id: Optional[int] = None) -> Dict[str, torch.Tensor]:
     """Load and collate model outputs from .pt batch files.
 
     Loads base_generation/ and evidence_generation/ directories separately so
@@ -355,6 +355,16 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
     ----------
     data_dir : Path
         Directory containing base_generation/ and evidence_generation/ subdirs.
+    pad_token_id : int, optional
+        Pad token id used for cross-batch padding of ``sequences`` and
+        ``input_ids`` when batch files have different sequence lengths.
+        Forwarded to ``read_and_collate_outputs`` and used for the base +
+        evidence merge.  When ``None``, falls back to ``0`` (legacy
+        behaviour).  Callers that construct a tokenizer (e.g. ``3.0``)
+        should pass ``tokenizer.pad_token_id`` here so that padding does
+        not collide with real token ids — this is critical for
+        ``find_generation_boundaries`` to detect the generation region
+        correctly.
 
     Returns
     -------
@@ -374,7 +384,9 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
         files = sorted(d.glob("model_outputs__batch_*.pt"))
         if not files:
             continue
-        part = read_and_collate_outputs(files, tokenizer=None, get_keys=None)
+        part = read_and_collate_outputs(
+            files, tokenizer=None, get_keys=None, pad_token_id=pad_token_id
+        )
         if "question_id" in part:
             part["question_id"] = _normalize_question_ids(part["question_id"])
         # Determine entry count from question_id list or first tensor.
@@ -395,6 +407,7 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
 
     # Merge base and evidence parts.
     combined: Dict = {}
+    merge_pad_value = pad_token_id if pad_token_id is not None else 0
     for key in parts[0].keys():
         values = [p[key] for p in parts if key in p]
         if all(isinstance(v, torch.Tensor) for v in values):
@@ -404,7 +417,11 @@ def load_model_outputs(data_dir: Path) -> Dict[str, torch.Tensor]:
                 pad_cfg = []
                 for d in range(t.dim() - 1, 0, -1):
                     pad_cfg += [0, max_sizes[d] - t.shape[d]]
-                padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
+                if key in ("sequences", "input_ids"):
+                    pad_value = merge_pad_value
+                else:
+                    pad_value = 0
+                padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
             combined[key] = torch.cat(padded, dim=0)
         else:
             merged: List = []
@@ -422,6 +439,7 @@ def load_multi_year_data(
     month: Optional[int],
     model: str,
     label_model: Optional[str] = None,
+    pad_token_id: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, torch.Tensor], Path]:
     """Load labeled data and model outputs across multiple years.
 
@@ -437,6 +455,10 @@ def load_multi_year_data(
         Model name/slug.
     label_model : str, optional
         Label model name for labeled parquet filenames.
+    pad_token_id : int, optional
+        Pad token id forwarded to ``load_model_outputs`` for correct
+        cross-batch padding of ``sequences`` and ``input_ids``.  Callers
+        with a tokenizer should pass ``tokenizer.pad_token_id`` here.
 
     Returns
     -------
@@ -462,7 +484,7 @@ def load_multi_year_data(
             df["year"] = year
             all_dfs.append(df)
 
-            outputs = load_model_outputs(data_dir)
+            outputs = load_model_outputs(data_dir, pad_token_id=pad_token_id)
             all_outputs_list.append(outputs)
         except FileNotFoundError as e:
             print(f"  WARNING: {e}")
@@ -477,7 +499,7 @@ def load_multi_year_data(
                 f"(covers years {dataset_years})"
             )
             df = load_labeled_dataset(data_dir, label_model)
-            outputs = load_model_outputs(data_dir)
+            outputs = load_model_outputs(data_dir, pad_token_id=pad_token_id)
 
             if set(dataset_years) != set(years):
                 df = _ensure_year_month_columns(df)
@@ -823,6 +845,7 @@ def stream_multi_year_data(
     model: str,
     label_model: Optional[str] = None,
     filter_keys: Optional[Set[str]] = None,
+    pad_token_id: Optional[int] = None,
 ) -> Iterator[Tuple[pd.DataFrame, Dict[str, torch.Tensor], Path]]:
     """Yield (per_year_df, per_year_outputs, data_dir) for each year with data.
 
@@ -841,6 +864,25 @@ def stream_multi_year_data(
     The ``pd.DataFrame`` yielded alongside each year's outputs is the
     per-year labeled subset (with a ``year`` column set).  Callers
     typically ``pd.concat`` the per-year dataframes at the end.
+
+    Parameters
+    ----------
+    data_root : Path
+        Root data directory.
+    years : List[int]
+        Years to load.
+    month : int, optional
+        Month for single-year datasets.
+    model : str
+        Model name/slug.
+    label_model : str, optional
+        Label model name for labeled parquet filenames.
+    filter_keys : Set[str], optional
+        Keys to keep in each yielded batch; others are dropped to save RAM.
+    pad_token_id : int, optional
+        Pad token id forwarded to ``_load_year_outputs_streaming`` for
+        correct cross-batch padding of ``sequences`` and ``input_ids``.
+        Callers with a tokenizer should pass ``tokenizer.pad_token_id``.
     """
     model_slug = resolve_model_slug(model)
 
@@ -866,7 +908,7 @@ def stream_multi_year_data(
         # corpus).  This matches the legacy load_model_outputs' behaviour
         # of concatenating base+evidence within a data_dir, while
         # *not* concatenating across years.
-        year_outputs = _load_year_outputs_streaming(data_dir, filter_keys)
+        year_outputs = _load_year_outputs_streaming(data_dir, filter_keys, pad_token_id=pad_token_id)
         if not year_outputs:
             continue
 
@@ -885,7 +927,7 @@ def stream_multi_year_data(
                 f"(covers years {dataset_years})"
             )
             df = load_labeled_dataset(data_dir, label_model)
-            year_outputs = _load_year_outputs_streaming(data_dir, filter_keys)
+            year_outputs = _load_year_outputs_streaming(data_dir, filter_keys, pad_token_id=pad_token_id)
             if not year_outputs:
                 raise ValueError(f"No data found for years {years}")
 
@@ -921,6 +963,7 @@ def stream_multi_year_data(
 def _load_year_outputs_streaming(
     data_dir: Path,
     filter_keys: Optional[Set[str]] = None,
+    pad_token_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Concatenate base+evidence batch files for a single year, but stream
     each batch through ``iter_batch_outputs`` to drop unwanted keys early.
@@ -933,6 +976,17 @@ def _load_year_outputs_streaming(
     tensor_batch_1, ...]}``.  ``iter_batch_outputs`` yields the loaded
     dict for each file; we then ``extend`` (not ``append``) so the
     per-key list flattens correctly.
+
+    Parameters
+    ----------
+    data_dir : Path
+        Directory containing base_generation/ and evidence_generation/ subdirs.
+    filter_keys : Set[str], optional
+        Keys to keep; others are dropped from each yielded batch.
+    pad_token_id : int, optional
+        Pad token id forwarded to ``_concat_parts`` for cross-batch
+        padding of ``sequences`` and ``input_ids``.  Callers with a
+        tokenizer should pass ``tokenizer.pad_token_id``.
     """
     from .utils import iter_batch_outputs
 
@@ -984,12 +1038,15 @@ def _load_year_outputs_streaming(
         return {}
 
     if len(parts) == 1:
-        return _concat_parts(parts)
+        return _concat_parts(parts, pad_token_id=pad_token_id)
 
-    return _concat_parts(parts)
+    return _concat_parts(parts, pad_token_id=pad_token_id)
 
 
-def _concat_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _concat_parts(
+    parts: List[Dict[str, Any]],
+    pad_token_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """Concatenate a list of per-year/per-mode dicts into one.
 
     Each input ``part`` is in the production format
@@ -1002,6 +1059,17 @@ def _concat_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
     ``parts[0].keys()``) so that evidence-only or base-only keys
     (e.g. ``perplexity`` if ``return_baseline_features`` was set for
     one phase but not the other) are preserved.
+
+    Parameters
+    ----------
+    parts : List[Dict[str, Any]]
+        Per-part dicts to merge.
+    pad_token_id : int, optional
+        Pad token id used for cross-batch padding of ``sequences`` and
+        ``input_ids``.  When ``None``, falls back to ``0`` (legacy
+        behaviour).  Callers with a tokenizer should pass
+        ``tokenizer.pad_token_id`` so padding does not collide with
+        real token ids.
     """
     combined: Dict[str, Any] = {}
     all_keys: set = set()
@@ -1028,12 +1096,16 @@ def _concat_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
             else:
                 # Pad to max size in each dim before concat.
                 max_sizes = [max(v.shape[d] for v in flat) for d in range(flat[0].dim())]
+                if pad_token_id is not None and key in ("sequences", "input_ids"):
+                    pad_value = pad_token_id
+                else:
+                    pad_value = 0
                 padded = []
                 for t in flat:
                     pad_cfg = []
                     for d in range(t.dim() - 1, 0, -1):
                         pad_cfg += [0, max_sizes[d] - t.shape[d]]
-                    padded.append(torch.nn.functional.pad(t, pad_cfg, value=0))
+                    padded.append(torch.nn.functional.pad(t, pad_cfg, value=pad_value))
                 combined[key] = torch.cat(padded, dim=0)
         else:
             combined[key] = flat

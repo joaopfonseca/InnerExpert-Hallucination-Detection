@@ -610,6 +610,10 @@ def main():
     # functions unchanged.  Peak RAM during loading is bounded by the
     # largest single year rather than the whole corpus.
     print("\n[streaming] Loading multi-year data one year at a time...")
+    from transformers import AutoTokenizer
+    _load_tokenizer = AutoTokenizer.from_pretrained(
+        args.model, cache_dir=str(resolve_cache_dir(args.model))
+    )
     per_year_dfs: List[pd.DataFrame] = []
     per_year_outputs: List[Dict] = []
     for df, outputs, _data_dir in stream_multi_year_data(
@@ -618,6 +622,7 @@ def main():
         args.month,
         args.model,
         args.label_model,
+        pad_token_id=_load_tokenizer.pad_token_id,
     ):
         per_year_dfs.append(df)
         per_year_outputs.append(outputs)
@@ -627,7 +632,7 @@ def main():
     if len(per_year_outputs) == 1:
         outputs = per_year_outputs[0]
     else:
-        outputs = _concat_parts(per_year_outputs)
+        outputs = _concat_parts(per_year_outputs, pad_token_id=_load_tokenizer.pad_token_id)
     del per_year_dfs, per_year_outputs
 
     # Extract answer-level labels for reference
