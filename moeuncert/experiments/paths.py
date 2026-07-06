@@ -77,77 +77,8 @@ def resolve_cache_dir(
 
 
 # ---------------------------------------------------------------------------
-#  Project root detection
+#  Model slug / dataset slug resolution
 # ---------------------------------------------------------------------------
-
-def resolve_project_root() -> Path:
-    """Return the project root directory (the parent of `moeuncert/`).
-
-    This file lives inside `moeuncert/experiments/`, so the project root is
-    three directories above it.
-    """
-    return Path(__file__).resolve().parent.parent.parent
-
-
-def resolve_pretrained_models_dir(cache_root: Optional[Path] = None) -> Path:
-    """Return the local model cache directory.
-
-    Defaults to ``<project_root>/pretrained_models/``.  The pipeline also
-    sets ``HF_HOME`` to this directory so that HuggingFace's auto-download
-    and ``cache_dir`` both point to the same place.
-
-    Parameters
-    ----------
-    cache_root : Path, optional
-        Override directory.  If None, uses the default described above.
-
-    Returns
-    -------
-    Path
-        Absolute path to the local model cache directory.
-    """
-    if cache_root is None:
-        cache_root = resolve_project_root() / "pretrained_models"
-    cache_root = cache_root.resolve()
-    cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root
-
-
-def resolve_cache_dir(
-    model_name: str,
-    cache_root: Optional[Path] = None,
-) -> Path:
-    """Return the per-model cache directory inside the project.
-
-    HuggingFace ``from_pretrained`` uses a nested ``models--<org>--<name>``
-    layout.  We replicate that convention so the cache is a drop-in
-    replacement for the global ``~/.cache/huggingface/hub/`` directory.
-
-    Parameters
-    ----------
-    model_name : str
-        Full HuggingFace model id, e.g. ``"google/gemma-4-26B-A4B-it"``.
-    cache_root : Path, optional
-        Override the root cache directory (default ``pretrained_models/``).
-
-    Returns
-    -------
-    Path
-        Absolute path that can be passed as ``cache_dir`` to
-        ``AutoModel.from_pretrained(..., cache_dir=...)``.
-
-    Examples
-    --------
-    >>> resolve_cache_dir("google/gemma-4-26B-A4B-it")
-    PosixPath('/.../MoE-Uncertainty-Estimation/pretrained_models/models--google--gemma-4-26B-A4B-it')
-    """
-    root = resolve_pretrained_models_dir(cache_root)
-    safe_name = model_name.replace("/", "--")
-    return root / f"models--{safe_name}"
-
-from datetime import datetime
-from pathlib import Path
-from typing import List, Optional, Tuple
 
 
 def resolve_model_slug(model_name: str) -> str:
@@ -364,3 +295,47 @@ def build_figures_path(
     PosixPath('figures/1.1-analyze-metrics/realtimeqa-2026-02/allenai__OLMoE')
     """
     return figures_root / script_name / dataset_slug / model_slug
+
+
+# ---------------------------------------------------------------------------
+#  Tokenizer loading (with 1.0's pad=eos reassignment)
+# ---------------------------------------------------------------------------
+
+
+def load_tokenizer_for_data(model_name: str, cache_dir: Optional[Path] = None):
+    """Load a tokenizer and apply 1.0's ``pad_token = eos_token`` reassignment.
+
+    ``1.0-generate-answers.py`` sets ``tokenizer.pad_token = tokenizer.eos_token``
+    before generation so that batching works with models that lack a native
+    pad token suitable for left-padding (e.g. OLMoE).  Consequently, the
+    saved ``.pt`` batch files are padded with ``eos_token_id``, **not** the
+    tokenizer's original ``pad_token_id``.
+
+    Any script that loads those ``.pt`` files and passes ``pad_token_id`` to
+    the collation functions (``read_and_collate_outputs``, ``_concat_parts``,
+    ``load_model_outputs``) MUST use this helper — or manually apply the same
+    reassignment — so that cross-batch padding matches the generation-time
+    padding.  Otherwise ``find_generation_boundaries`` scans for the wrong pad
+    token id and miscomputes the generation region, producing spurious
+    empty-generation skips and "no pad token found" warnings.
+
+    Parameters
+    ----------
+    model_name : str
+        HuggingFace model id (e.g. ``"allenai/OLMoE-1B-7B-0924-Instruct"``).
+    cache_dir : Path, optional
+        Override the cache directory.  Defaults to ``resolve_cache_dir(model_name)``.
+
+    Returns
+    -------
+    transformers.PreTrainedTokenizer
+        Tokenizer with ``pad_token`` set to ``eos_token`` so that
+        ``tokenizer.pad_token_id`` returns the eos id (matching the .pt files).
+    """
+    from transformers import AutoTokenizer
+
+    if cache_dir is None:
+        cache_dir = resolve_cache_dir(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(cache_dir))
+    tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer

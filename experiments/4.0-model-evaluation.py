@@ -144,9 +144,12 @@ def main():
 
     # Load data first; determine the actual source directory afterwards.
     print("\nLoading test data...")
+    from moeuncert.experiments import load_tokenizer_for_data
+    tokenizer = load_tokenizer_for_data(args.model)
     df_labeled, outputs, source_dir = load_multi_year_data(
         args.data_root, args.test_years, args.test_month,
         args.model, args.label_model,
+        pad_token_id=tokenizer.pad_token_id,
     )
     print(f"  {len(df_labeled)} labeled rows")
     print(f"  Source data dir: {source_dir}")
@@ -279,8 +282,6 @@ def main():
     # Ground Truth
     # -----------------------------------------------------------------------
     print("\n[GT] Building ground truth ...")
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=str(resolve_cache_dir(args.model)))
     gt_df = build_ground_truth(outputs, df_labeled, label_lookup, tokenizer)
     gt_path = predictions_dir / "ground_truth.parquet"
     gt_df.to_parquet(gt_path, index=False)

@@ -610,10 +610,8 @@ def main():
     # functions unchanged.  Peak RAM during loading is bounded by the
     # largest single year rather than the whole corpus.
     print("\n[streaming] Loading multi-year data one year at a time...")
-    from transformers import AutoTokenizer
-    _load_tokenizer = AutoTokenizer.from_pretrained(
-        args.model, cache_dir=str(resolve_cache_dir(args.model))
-    )
+    from moeuncert.experiments import load_tokenizer_for_data
+    _load_tokenizer = load_tokenizer_for_data(args.model)
     per_year_dfs: List[pd.DataFrame] = []
     per_year_outputs: List[Dict] = []
     for df, outputs, _data_dir in stream_multi_year_data(

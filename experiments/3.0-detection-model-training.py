@@ -446,10 +446,8 @@ if __name__ == "__main__":
     # Load multi-year data
     # =========================================================================
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model,
-        cache_dir=str(resolve_cache_dir(args.model)),
-    )
+    from moeuncert.experiments import load_tokenizer_for_data
+    tokenizer = load_tokenizer_for_data(args.model)
 
     df_labeled, all_outputs, _ = load_multi_year_data(
         args.data_root,

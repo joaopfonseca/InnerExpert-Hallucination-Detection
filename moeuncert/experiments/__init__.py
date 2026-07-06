@@ -10,6 +10,7 @@ from .paths import (
     build_data_path,
     build_results_path,
     build_figures_path,
+    load_tokenizer_for_data,
 )
 from .utils import (
     optimal_threshold,
@@ -41,6 +42,7 @@ __all__ = [
     "build_data_path",
     "build_results_path",
     "build_figures_path",
+    "load_tokenizer_for_data",
     "optimal_threshold",
     "get_quantization_kwargs",
     "read_and_collate_outputs",

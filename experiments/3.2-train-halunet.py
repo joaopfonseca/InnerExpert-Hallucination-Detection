@@ -48,7 +48,7 @@ from moeuncert.experiments import (
 def extract_halunet_features(
     outputs: Dict[str, torch.Tensor],
     df_labeled: pd.DataFrame,
-) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], np.ndarray]:
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], np.ndarray, List[int]]:
     """Extract HaluNet features (log_likelihoods, entropies, embeddings) per answer.
 
     Parameters
@@ -60,8 +60,11 @@ def extract_halunet_features(
 
     Returns
     -------
-    Tuple of (log_likelihoods_list, entropies_list, embeddings_list, labels)
+    Tuple of (log_likelihoods_list, entropies_list, embeddings_list, labels, valid_indices)
         Each list element corresponds to one answer (variable-length sequences).
+        ``valid_indices`` is the list of positional indices into
+        ``df_labeled`` for each returned answer, so the caller can filter
+        ``df_labeled`` to match the extracted features.
     """
     # Check required keys exist
     required_keys = ["log_likelihoods", "entropies", "last_hidden_states", "question_id", "sequences", "input_ids"]
@@ -73,8 +76,6 @@ def extract_halunet_features(
         )
 
     # Build a mapping from string question ID to a list of positional indices.
-    # The same question_id can appear twice when both base and evidence outputs
-    # are present; duplicates are disambiguated via evidence_present.
     from collections import defaultdict
     all_qids = outputs["question_id"]  # list of strings
     qid_to_indices: dict = defaultdict(list)
@@ -86,39 +87,38 @@ def extract_halunet_features(
     entropies_list = []
     embeddings_list = []
     labels = []
+    valid_indices = []
+    skipped_no_output = 0
+    skipped_empty_gen = 0
 
-    for _, row in df_labeled.iterrows():
+    for row_pos, (_, row) in enumerate(df_labeled.iterrows()):
         qid = str(row["question_id"])
         if qid not in qid_to_indices:
+            skipped_no_output += 1
             continue
 
         indices = qid_to_indices[qid]
-        # Convention: base outputs (evidence_present=False) occupy the first
-        # occurrence; RAG/evidence outputs occupy the second occurrence.
         evidence_present = bool(row.get("evidence_present", False))
         idx = indices[1] if evidence_present and len(indices) > 1 else indices[0]
 
-        # Find generation boundaries
         input_ids = outputs["input_ids"][idx]
         sequences = outputs["sequences"][idx]
         gen_start, gen_end = find_generation_boundaries(input_ids, sequences)
         gen_len = gen_end - gen_start
 
         if gen_len <= 0:
+            skipped_empty_gen += 1
             continue
 
-        # Extract features for generated tokens
         ll = outputs["log_likelihoods"][idx, :gen_len].numpy()
         ent = outputs["entropies"][idx, :gen_len].numpy()
-
-        # Last-layer hidden states for generated tokens only (pre-sliced)
         hidden = outputs["last_hidden_states"][idx, :gen_len, :].numpy()
 
         log_likelihoods_list.append(ll)
         entropies_list.append(ent)
         embeddings_list.append(hidden)
+        valid_indices.append(row_pos)
 
-        # Answer-level label: prefer LLM label, fall back to weak label per row
         import math
         llm_val = row.get("label_llm_answer")
         if llm_val is not None and not (isinstance(llm_val, float) and math.isnan(llm_val)):
@@ -128,11 +128,20 @@ def extract_halunet_features(
         else:
             labels.append(0)
 
+    total_skipped = skipped_no_output + skipped_empty_gen
+    if total_skipped > 0:
+        print(f"  Skipped {total_skipped} sample(s): "
+              f"{skipped_no_output} no model output, {skipped_empty_gen} empty/zero-length generation")
+        if skipped_empty_gen > len(df_labeled) * 0.05:
+            print(f"  WARNING: {skipped_empty_gen} empty-generation skips (>5% of {len(df_labeled)} rows). "
+                  "This may indicate a pad_token_id mismatch — check that load_tokenizer_for_data() is used.")
+
     return (
         log_likelihoods_list,
         entropies_list,
         embeddings_list,
         np.array(labels),
+        valid_indices,
     )
 
 
@@ -243,10 +252,8 @@ def main():
         "question_id", "sequences", "input_ids",
     }
     print("\nLoading training data (streaming, filtered to HaluNet keys)...")
-    from transformers import AutoTokenizer
-    _load_tokenizer = AutoTokenizer.from_pretrained(
-        args.model, cache_dir=str(resolve_cache_dir(args.model))
-    )
+    from moeuncert.experiments import load_tokenizer_for_data
+    _load_tokenizer = load_tokenizer_for_data(args.model)
     per_year_dfs: List[pd.DataFrame] = []
     per_year_outputs: List[Dict] = []
     for df, outputs, _data_dir in stream_multi_year_data(
@@ -271,7 +278,7 @@ def main():
     # Extract HaluNet features
     print("\nExtracting HaluNet features...")
     try:
-        ll_list, ent_list, emb_list, labels = extract_halunet_features(
+        ll_list, ent_list, emb_list, labels, valid_indices = extract_halunet_features(
             outputs, df_labeled
         )
     except KeyError as e:
@@ -285,19 +292,21 @@ def main():
     print(f"  Avg sequence length: {np.mean([len(x) for x in ll_list]):.1f}")
     print(f"  Hallucination rate: {labels.mean():.1%}")
 
+    # Filter df_labeled to match the extracted features (drops rows with
+    # no model output or empty generation).
+    df_labeled = df_labeled.iloc[valid_indices].reset_index(drop=True)
+
     # Stratified train/val split
     print(f"\n{'=' * 70}")
     print("TRAIN/VAL SPLIT")
     print(f"{'=' * 70}")
 
-    # Group split by the real per-answer question ids so all rows for the same
-    # question stay in the same split.
     if "question_id" not in df_labeled.columns:
         raise KeyError("df_labeled must contain a 'question_id' column for grouped splitting")
 
     if len(df_labeled) != len(labels):
         raise ValueError(
-            f"df_labeled/labels length mismatch: {len(df_labeled)} rows vs {len(labels)} labels"
+            f"Length mismatch after filtering: {len(df_labeled)} df rows vs {len(labels)} labels"
         )
 
     answer_qids = df_labeled["question_id"].astype(str)
