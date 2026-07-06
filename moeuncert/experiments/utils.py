@@ -169,13 +169,30 @@ def read_and_collate_outputs(
             all_outputs[key] = torch.concat(padded, dim=0)
 
     if tokenizer is not None and "sequences" in all_outputs and "input_ids" in all_outputs:
-        all_outputs["generated_answer_ids"] = all_outputs["sequences"][
-            :, all_outputs["input_ids"].shape[-1] :
-        ]
-        all_outputs["generated_answer"] = tokenizer.batch_decode(
-            all_outputs["sequences"][:, all_outputs["input_ids"].shape[-1] :],
-            skip_special_tokens=True,
-        )
+        # Decode generated answers per-row using each row's actual prompt
+        # length, not the collated max.  Using input_ids.shape[-1] (the
+        # padded max) would slice past the generated tokens for rows with
+        # shorter prompts, producing empty strings.
+        pad_id = tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = tokenizer.eos_token_id
+        seqs = all_outputs["sequences"]
+        inps = all_outputs["input_ids"]
+        generated_answers = []
+        generated_answer_ids_list = []
+        for i in range(seqs.shape[0]):
+            non_pad = inps[i] != pad_id
+            if non_pad.any():
+                prompt_end = torch.where(non_pad)[0][-1].item() + 1
+            else:
+                prompt_end = 0
+            gen_ids = seqs[i, prompt_end:]
+            generated_answer_ids_list.append(gen_ids)
+            generated_answers.append(
+                tokenizer.decode(gen_ids, skip_special_tokens=True)
+            )
+        all_outputs["generated_answer_ids"] = generated_answer_ids_list
+        all_outputs["generated_answer"] = generated_answers
     return all_outputs
 
 
