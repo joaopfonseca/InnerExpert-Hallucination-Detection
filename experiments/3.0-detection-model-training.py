@@ -71,6 +71,53 @@ from moeuncert.experiments import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Transformer model (optional — requires skorch)
+# ---------------------------------------------------------------------------
+
+try:
+    from skorch import NeuralNetClassifier
+    from skorch.callbacks import EarlyStopping
+    from moeuncert.models import LayerGroupTransformerClassifier
+    _HAS_SKORCH = True
+except ImportError:
+    _HAS_SKORCH = False
+
+
+def _build_transformer_config(group_sizes):
+    """Build a skorch NeuralNetClassifier for the Transformer model.
+
+    Returns a config dict with 'model' and 'param_grid' keys, or raises
+    if skorch is not installed.
+    """
+    if not _HAS_SKORCH:
+        raise ImportError(
+            "skorch is required for the Transformer model. "
+            "Install with: pip install skorch"
+        )
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = NeuralNetClassifier(
+        module=LayerGroupTransformerClassifier,
+        module__group_sizes=group_sizes,
+        module__d_model=64,
+        module__n_heads=4,
+        module__n_transformer_layers=2,
+        module__dropout=0.1,
+        module__n_classes=2,
+        criterion=torch.nn.CrossEntropyLoss,
+        optimizer=torch.optim.Adam,
+        optimizer__lr=1e-3,
+        max_epochs=50,
+        batch_size=256,
+        iterator_train__shuffle=True,
+        callbacks=[EarlyStopping(patience=5, monitor="valid_loss")],
+        device=device,
+        verbose=0,
+    )
+    return model
+
+
 def build_feature_pipeline(
     feature_names: List[str],
     scale_features: List[str],
@@ -468,6 +515,13 @@ if __name__ == "__main__":
         tokenizer,
     )
 
+    # Compute per-group sizes for the Transformer model (before merge_features
+    # flattens the structured tensors into a single 2D matrix).
+    from moeuncert.models import compute_group_sizes
+    n_layers_model = features["hidden_scores"].shape[1]
+    transformer_group_sizes = compute_group_sizes(features, n_layers_model)
+    print(f"  Transformer group_sizes: {transformer_group_sizes}")
+
     # Merge features
     X, feature_names = merge_features(
         features,
@@ -550,6 +604,17 @@ if __name__ == "__main__":
                 "clf__hidden_layer_sizes": [(128,), (256, 128), (128, 64)],
                 "clf__alpha": [1e-4, 1e-3, 1e-2],
                 "clf__learning_rate_init": [1e-3, 1e-4],
+            },
+        },
+        "Transformer": {
+            "model": _build_transformer_config(transformer_group_sizes),
+            "param_grid": {
+                "clf__module__d_model": [64, 128],
+                "clf__module__n_heads": [2, 4],
+                "clf__module__n_transformer_layers": [1, 2, 3],
+                "clf__module__dropout": [0.1, 0.3],
+                "clf__optimizer__lr": [1e-3, 1e-4],
+                "clf__max_epochs": [30, 50],
             },
         },
     }
