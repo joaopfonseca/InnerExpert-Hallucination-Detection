@@ -518,7 +518,15 @@ if __name__ == "__main__":
     # Compute per-group sizes for the Transformer model (before merge_features
     # flattens the structured tensors into a single 2D matrix).
     from moeuncert.models import compute_group_sizes
-    n_layers_model = features["hidden_scores"].shape[1]
+
+    # router_entropy covers exactly the MoE decoder layers (no embedding
+    # layer), so it gives the correct layer count for the Transformer's
+    # token grouping.  hidden_scores includes the embedding layer output
+    # at position 0, giving n_layers+1 entries — trim it to match.
+    n_layers_model = features["router_entropy"].shape[1]
+    if features["hidden_scores"].shape[1] > n_layers_model:
+        features["hidden_scores"] = features["hidden_scores"][:, -n_layers_model:]
+
     transformer_group_sizes = compute_group_sizes(features, n_layers_model)
     print(f"  Transformer group_sizes: {transformer_group_sizes}")
 
