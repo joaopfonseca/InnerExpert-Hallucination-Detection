@@ -653,7 +653,7 @@ if __name__ == "__main__":
             param_grid,
             cv=group_kfold.split(X_train, y_train, groups=qids_train),
             scoring="f1",
-            n_jobs=32,
+            n_jobs=8,
             verbose=0,
         )
         search.fit(X_train, y_train)
