@@ -609,9 +609,19 @@ def main():
     # yields into a single (df_labeled, outputs) pair to keep the fit
     # functions unchanged.  Peak RAM during loading is bounded by the
     # largest single year rather than the whole corpus.
+    #
+    # filter_keys drops heavy keys that 3.1 never uses:
+    #   expert_usage (28 GB padded for Gemma 4), last_hidden_states (1.7 GB),
+    #   sequences, input_ids, log_likelihoods, entropies, router_entropy,
+    #   expert_hidden_scores, expert_similarities, expert_usage_*.
+    # This reduces the base+evidence peak from ~48 GB to ~2 GB.
     print("\n[streaming] Loading multi-year data one year at a time...")
     from moeuncert.experiments import load_tokenizer_for_data
     _load_tokenizer = load_tokenizer_for_data(args.model)
+    base_evidence_keys = {
+        "question_id", "scores_entropy", "attention_scores",
+        "hidden_scores", "perplexity", "evidence_present",
+    }
     per_year_dfs: List[pd.DataFrame] = []
     per_year_outputs: List[Dict] = []
     for df, outputs, _data_dir in stream_multi_year_data(
@@ -621,6 +631,7 @@ def main():
         args.model,
         args.label_model,
         pad_token_id=_load_tokenizer.pad_token_id,
+        filter_keys=base_evidence_keys,
     ):
         per_year_dfs.append(df)
         per_year_outputs.append(outputs)
