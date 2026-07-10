@@ -290,6 +290,12 @@ def optimal_threshold(y_true, scores, metric="f1"):
     """
     from sklearn.metrics import precision_recall_curve
 
+    # Sanitize: replace inf/NaN so sklearn's assert_all_finite doesn't crash.
+    # +inf (e.g. perplexity overflow on low-probability tokens) becomes 1e10,
+    # preserving the ordering for threshold optimization.
+    y_true = np.asarray(y_true)
+    scores = np.nan_to_num(np.asarray(scores, dtype=np.float64), nan=0.0, posinf=1e10, neginf=0.0)
+
     if metric == "f1":
         precisions, recalls, thresholds = precision_recall_curve(y_true, scores)
         f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
