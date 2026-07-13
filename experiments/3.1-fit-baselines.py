@@ -24,7 +24,6 @@ import numpy as np
 import pandas as pd
 import torch
 from pathlib import Path
-from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +36,7 @@ from moeuncert.experiments import (
     resolve_cache_dir,
     load_multi_year_data,
     optimal_threshold,
+    safe_roc_auc_score,
     stratified_group_split,
     stream_multi_year_data,
 )
@@ -144,7 +144,7 @@ def fit_predictive_entropy(
     
     # Compute AUROC for reference
     if len(np.unique(matched_labels)) > 1:
-        auroc = roc_auc_score(matched_labels, agg_scores)
+        auroc = safe_roc_auc_score(matched_labels, agg_scores)
     else:
         auroc = 0.5
     
@@ -223,7 +223,7 @@ def fit_llm_check(
 
             # Compute AUROC for this layer
             if len(layer_matched_labels) > 1 and len(np.unique(layer_matched_labels)) > 1:
-                auroc = roc_auc_score(layer_matched_labels, layer_agg_scores)
+                auroc = safe_roc_auc_score(layer_matched_labels, layer_agg_scores)
                 if auroc > best_auroc:
                     best_auroc = auroc
                     best_layer = layer
@@ -250,7 +250,7 @@ def fit_llm_check(
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
 
         if len(matched_labels) > 1 and len(np.unique(matched_labels)) > 1:
-            layer_auroc = roc_auc_score(matched_labels, agg_scores)
+            layer_auroc = safe_roc_auc_score(matched_labels, agg_scores)
         else:
             layer_auroc = 0.5
 
@@ -278,7 +278,7 @@ def fit_llm_check(
         matched_perplexities = perplexities.numpy()[mask]
 
         threshold, f1 = optimal_threshold(matched_labels, matched_perplexities)
-        auroc = roc_auc_score(matched_labels, matched_perplexities) if len(np.unique(matched_labels)) > 1 else 0.5
+        auroc = safe_roc_auc_score(matched_labels, matched_perplexities) if len(np.unique(matched_labels)) > 1 else 0.5
 
         print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
 
@@ -307,7 +307,7 @@ def fit_llm_check(
         matched_labels = np.array([qid_to_label[qid] for qid in unique_qids])
 
         threshold, f1 = optimal_threshold(matched_labels, agg_scores)
-        auroc = roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
+        auroc = safe_roc_auc_score(matched_labels, agg_scores) if len(np.unique(matched_labels)) > 1 else 0.5
 
         print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
 
@@ -403,7 +403,7 @@ def fit_semantic_uncertainty(
 
     # Fit threshold using F1
     threshold, f1 = optimal_threshold(matched_labels, scores)
-    auroc = roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
+    auroc = safe_roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
 
     print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
     print(f"  Evaluated on {len(scores)} questions")
@@ -506,7 +506,7 @@ def fit_semantic_energy(
 
     # Fit threshold using F1
     threshold, f1 = optimal_threshold(matched_labels, scores)
-    auroc = roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
+    auroc = safe_roc_auc_score(matched_labels, scores) if len(np.unique(matched_labels)) > 1 else 0.5
 
     print(f"  Optimal threshold: {threshold:.4f} (F1: {f1:.4f}, AUROC: {auroc:.4f})")
     print(f"  Evaluated on {len(scores)} questions")

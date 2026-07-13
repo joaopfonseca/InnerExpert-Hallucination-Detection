@@ -14,6 +14,7 @@ from .paths import (
 )
 from .utils import (
     optimal_threshold,
+    safe_roc_auc_score,
     get_quantization_kwargs,
     read_and_collate_outputs,
     iter_batch_outputs,
@@ -44,6 +45,7 @@ __all__ = [
     "build_figures_path",
     "load_tokenizer_for_data",
     "optimal_threshold",
+    "safe_roc_auc_score",
     "get_quantization_kwargs",
     "read_and_collate_outputs",
     "iter_batch_outputs",

@@ -318,6 +318,26 @@ def optimal_threshold(y_true, scores, metric="f1"):
         raise ValueError(f"Unknown metric: {metric}. Use 'f1' or 'accuracy'.")
 
 
+def safe_roc_auc_score(y_true, y_score, **kwargs):
+    """``roc_auc_score`` that handles inf/NaN in ``y_score``.
+
+    Large-vocabulary models (e.g. Gemma 4 with 262K vocab) can produce
+    ``perplexity=inf`` when a generated token gets numerically zero
+    probability.  sklearn's ``roc_auc_score`` rejects non-finite values.
+    This wrapper replaces ``+inf`` with ``1e10``, ``-inf`` with ``0``,
+    and ``NaN`` with ``0`` before delegating to sklearn, preserving
+    the score ordering for AUROC computation.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    y_true = np.asarray(y_true)
+    y_score = np.nan_to_num(
+        np.asarray(y_score, dtype=np.float64),
+        nan=0.0, posinf=1e10, neginf=0.0,
+    )
+    return roc_auc_score(y_true, y_score, **kwargs)
+
+
 def stratified_group_split(
     y: np.ndarray,
     groups: np.ndarray,
