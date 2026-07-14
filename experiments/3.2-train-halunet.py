@@ -114,6 +114,13 @@ def extract_halunet_features(
         ent = outputs["entropies"][idx, :gen_len].numpy()
         hidden = outputs["last_hidden_states"][idx, :gen_len, :].numpy()
 
+        # Sanitize: Gemma 4's 262K vocab can produce -inf log-likelihoods
+        # (float16 log_softmax underflow for low-probability tokens).
+        # Replace with finite values so HaluNet doesn't produce nan loss.
+        ll = np.nan_to_num(ll, nan=0.0, posinf=0.0, neginf=-100.0)
+        ent = np.nan_to_num(ent, nan=0.0, posinf=100.0, neginf=0.0)
+        hidden = np.nan_to_num(hidden, nan=0.0, posinf=0.0, neginf=0.0)
+
         log_likelihoods_list.append(ll)
         entropies_list.append(ent)
         embeddings_list.append(hidden)
@@ -378,11 +385,16 @@ def main():
         val_probs.append(prob)
     val_probs = np.array(val_probs)
 
-    # Compute metrics
-    from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
-    from sklearn.metrics import precision_recall_curve
+    # Sanitize: HaluNet can produce NaN probabilities if the model
+    # diverged during training. Replace before passing to sklearn.
+    val_probs = np.nan_to_num(val_probs, nan=0.0, posinf=1.0, neginf=0.0)
 
-    auroc = roc_auc_score(y_val, val_probs)
+    # Compute metrics
+    from sklearn.metrics import f1_score, accuracy_score
+    from sklearn.metrics import precision_recall_curve
+    from moeuncert.experiments import safe_roc_auc_score
+
+    auroc = safe_roc_auc_score(y_val, val_probs)
 
     # Find optimal threshold for F1
     precisions, recalls, thresholds_pr = precision_recall_curve(y_val, val_probs)
