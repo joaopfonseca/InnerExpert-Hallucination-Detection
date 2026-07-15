@@ -39,6 +39,12 @@ class SelfCheckNLI(BaseBaseline):
     def __init__(self, device=None):
         from selfcheckgpt.modeling_selfcheck import SelfCheckNLI as _SelfCheckNLI
 
+        # Monkey-patch: transformers 5.x removed DebertaV2Tokenizer.batch_encode_plus.
+        # Alias it to __call__ which accepts the same arguments and returns BatchEncoding.
+        from transformers import DebertaV2Tokenizer
+        if not hasattr(DebertaV2Tokenizer, "batch_encode_plus"):
+            DebertaV2Tokenizer.batch_encode_plus = DebertaV2Tokenizer.__call__
+
         if device is None:
             device = torch.device("cpu")
         self.device = device
