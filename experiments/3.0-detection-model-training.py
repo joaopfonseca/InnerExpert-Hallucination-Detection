@@ -588,9 +588,10 @@ if __name__ == "__main__":
         "RandomForest": {
             "model": RandomForestClassifier(random_state=args.seed, n_jobs=1),
             "param_grid": {
-                "clf__n_estimators": [100, 300],
-                "clf__max_depth": [10, 20, None],
+                "clf__n_estimators": [300, 500, 1000],
+                "clf__max_depth": [3, 6, 10],
                 "clf__min_samples_leaf": [1, 5],
+                "clf__max_features": ["sqrt", "log2", None]
             },
         },
         "XGBoost": {
@@ -601,28 +602,33 @@ if __name__ == "__main__":
                 verbosity=0,
             ),
             "param_grid": {
-                "clf__n_estimators": [100, 300],
+                "clf__n_estimators": [100, 300, 500, 1000],
                 "clf__max_depth": [3, 6, 10],
-                "clf__learning_rate": [0.01, 0.1, 0.3],
+                "clf__learning_rate": [0.001, 0.01, 0.1],
+                "clf__subsample": [0.8, 1.0],
+                "clf__colsample_bytree": [0.8, 1.0],
             },
         },
         "MLP": {
-            "model": MLPClassifier(random_state=args.seed, early_stopping=True),
+            "model": MLPClassifier(
+                random_state=args.seed, max_iter=10000
+            ),
             "param_grid": {
-                "clf__hidden_layer_sizes": [(128,), (256, 128), (128, 64)],
-                "clf__alpha": [1e-4, 1e-3, 1e-2],
+                "clf__hidden_layer_sizes": [(128,), (256,), (512,), (1024)],
+                "clf__alpha": [1e-4, 1e-3, 1e-2, 1e-1],
                 "clf__learning_rate_init": [1e-3, 1e-4],
+                "clf__early_stopping": [True, False],
             },
         },
         "Transformer": {
             "model": _build_transformer_config(transformer_group_sizes),
             "param_grid": {
-                "clf__module__d_model": [64, 128],
-                "clf__module__n_heads": [2, 4],
+                "clf__module__d_model": [128, 256, 512],
+                "clf__module__n_heads": [4],
                 "clf__module__n_transformer_layers": [1, 2, 3],
                 "clf__module__dropout": [0.1, 0.3],
                 "clf__optimizer__lr": [1e-3, 1e-4],
-                "clf__max_epochs": [30, 50],
+                "clf__max_epochs": [200, 500],
             },
         },
     }
