@@ -376,10 +376,12 @@ def evaluate_selfcheck(
         from moeuncert.experiments import load_tokenizer_for_data
         tokenizer = load_tokenizer_for_data(model)
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     if variant == "nli":
-        checker = SelfCheckNLI()
+        checker = SelfCheckNLI(device=device)
     elif variant == "prompt":
-        checker = SelfCheckPrompt()
+        checker = SelfCheckPrompt(device=device)
     else:
         raise ValueError(f"Unknown SelfCheck variant: {variant}")
 
