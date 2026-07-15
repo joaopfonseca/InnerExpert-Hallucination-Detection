@@ -41,8 +41,12 @@ class SelfCheckNLI(BaseBaseline):
 
         # Monkey-patch: transformers 5.x removed DebertaV2Tokenizer.batch_encode_plus.
         # The old API accepted batch_text_or_text_pairs=[(sentence, passage)] for
-        # NLI sentence-pair encoding. The modern __call__ uses text=/text_target=
+        # NLI sentence-pair encoding. The modern __call__ uses text=/text_pair=
         # instead. This shim translates the old calling convention to the new one.
+        # NOTE: must use text_pair (sentence-pair encoding with token_type_ids
+        # distinguishing premise/hypothesis), NOT text_target (which encodes the
+        # second sequence as seq2seq labels, producing a shape mismatch with
+        # DeBERTa's classification head).
         from transformers import DebertaV2Tokenizer
         if not hasattr(DebertaV2Tokenizer, "batch_encode_plus"):
             def _batch_encode_plus_compat(self, batch_text_or_text_pairs=None, **kwargs):
@@ -53,8 +57,8 @@ class SelfCheckNLI(BaseBaseline):
                         and isinstance(batch_text_or_text_pairs[0], tuple)
                     ):
                         text = [p[0] for p in batch_text_or_text_pairs]
-                        text_target = [p[1] for p in batch_text_or_text_pairs]
-                        return self(text=text, text_target=text_target, **kwargs)
+                        text_pair = [p[1] for p in batch_text_or_text_pairs]
+                        return self(text=text, text_pair=text_pair, **kwargs)
                 return self(text=batch_text_or_text_pairs, **kwargs)
             DebertaV2Tokenizer.batch_encode_plus = _batch_encode_plus_compat
 
