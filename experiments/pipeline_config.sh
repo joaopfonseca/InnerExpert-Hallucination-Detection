@@ -43,6 +43,13 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export HF_HOME="${PROJECT_ROOT}/pretrained_models"
 export TRANSFORMERS_CACHE="${HF_HOME}"
 
+# Pass through Hugging Face auth token from default cache.
+# HF_HOME redirects the token lookup path away from ~/.cache/huggingface/token.
+# Re-export the token so gated repos (e.g. Llama-2 for SelfCheckPrompt) work.
+if [ -z "${HF_TOKEN:-}" ] && [ -f "${HOME}/.cache/huggingface/token" ]; then
+    export HF_TOKEN="$(cat "${HOME}/.cache/huggingface/token")"
+fi
+
 # --- GENERATION --------------------------------------------------------------
 export MAX_NEW_TOKENS=65
 

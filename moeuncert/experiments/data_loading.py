@@ -118,6 +118,10 @@ def _filter_outputs_by_question_ids(
 
 def _normalize_question_id_value(value) -> str:
     """Normalize a single question ID to a stable string form."""
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return str(int(value.item()))
+        return str(int(value.flatten()[0].item()))
     if isinstance(value, (np.integer, int)):
         return str(int(value))
     if isinstance(value, (np.floating, float)):

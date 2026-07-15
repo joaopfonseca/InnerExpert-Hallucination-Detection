@@ -32,6 +32,7 @@ from moeuncert.experiments import (
     find_generation_boundaries,
     resolve_cache_dir,
 )
+from moeuncert.experiments.data_loading import _normalize_question_id_value
 
 _find_gen_boundaries = find_generation_boundaries
 
@@ -283,7 +284,11 @@ def evaluate_semantic_uncertainty(
         responses = decode_sampled_responses(tokenizer, responses_tokens)
         try:
             score = su.predict_proba(responses, logprobs)
-            rows.append({"question_id": qid, "score": float(score)})
+            clean_qid = _normalize_question_id_value(qid)
+            rows.append({
+                "question_id": f"{clean_qid}::0",
+                "score": float(np.nan_to_num(score, posinf=1e10, neginf=-1e10)),
+            })
         except Exception as e:
             print(f"  WARNING: Failed SU for qid={qid}: {e}")
 
@@ -342,7 +347,11 @@ def evaluate_semantic_energy(
                 response_probs=response_probs,
                 clusters=clusters,
             )
-            rows.append({"question_id": qid, "score": float(score)})
+            clean_qid = _normalize_question_id_value(qid)
+            rows.append({
+                "question_id": f"{clean_qid}::0",
+                "score": float(np.nan_to_num(score, posinf=1e10, neginf=-1e10)),
+            })
         except Exception as e:
             print(f"  WARNING: Failed SEnergy for qid={qid}: {e}")
             continue
@@ -395,7 +404,11 @@ def evaluate_selfcheck(
 
         try:
             scores = checker.predict_proba([target], sampled_passages)
-            rows.append({"question_id": qid, "score": float(scores.mean())})
+            clean_qid = _normalize_question_id_value(qid)
+            rows.append({
+                "question_id": f"{clean_qid}::0",
+                "score": float(np.nan_to_num(scores.mean(), posinf=1.0, neginf=0.0)),
+            })
         except Exception as e:
             print(f"  WARNING: Failed selfcheck_{variant} for qid={qid}: {e}")
             continue
