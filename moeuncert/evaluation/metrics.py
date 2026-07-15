@@ -64,6 +64,15 @@ def compute_metrics_for_predictions(
             "n": int(len(y_true)),
         }
 
+    # Sanitize: replace inf/NaN so sklearn doesn't crash.  HaluNet can
+    # produce NaN if training diverged; perplexity can be inf for
+    # large-vocab models (e.g. Gemma 4 with 262K vocab).
+    y_true = np.asarray(y_true)
+    y_proba = np.nan_to_num(
+        np.asarray(y_proba, dtype=np.float64),
+        nan=0.0, posinf=1.0, neginf=0.0,
+    )
+
     y_pred = (y_proba >= threshold).astype(int)
     auroc = roc_auc_score(y_true, y_proba)
     auprc = average_precision_score(y_true, y_proba)
