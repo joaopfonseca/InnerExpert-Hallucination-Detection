@@ -473,7 +473,9 @@ def analyse(
         merged = gt_answer.merge(pred_df[["question_id", score_col]], on="question_id", how="inner")
         if len(merged) == 0 or len(np.unique(merged["label"])) < 2:
             continue
-        fpr, tpr, _ = roc_curve(merged["label"].values, merged[score_col].values)
+        y_proba = np.nan_to_num(merged[score_col].astype(float).values,
+                                nan=0.0, posinf=1.0, neginf=0.0)
+        fpr, tpr, _ = roc_curve(merged["label"].values, y_proba)
         ax.plot(fpr, tpr, label=f"{method} (AUC={metrics['auroc']:.3f})")
         plotted_any = True
 
@@ -557,7 +559,8 @@ def analyse(
                 continue
 
             y_true = merged["label"].astype(int).values
-            y_proba = merged[score_col].astype(float).values
+            y_proba = np.nan_to_num(merged[score_col].astype(float).values,
+                                    nan=0.0, posinf=1.0, neginf=0.0)
 
             # Normalize scores to [0, 1] for calibration display if needed
             if y_proba.min() < 0 or y_proba.max() > 1:
