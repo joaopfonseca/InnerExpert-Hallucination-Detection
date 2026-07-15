@@ -270,10 +270,8 @@ def evaluate_semantic_uncertainty(
         )
 
     if tokenizer is None:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model, cache_dir=str(resolve_cache_dir(model))
-        )
+        from moeuncert.experiments import load_tokenizer_for_data
+        tokenizer = load_tokenizer_for_data(model)
 
     su = SemanticUncertainty()
 
@@ -318,10 +316,8 @@ def evaluate_semantic_energy(
         )
 
     if tokenizer is None:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model, cache_dir=str(resolve_cache_dir(model))
-        )
+        from moeuncert.experiments import load_tokenizer_for_data
+        tokenizer = load_tokenizer_for_data(model)
 
     su = SemanticUncertainty()
     se = SemanticEnergy()
@@ -377,10 +373,8 @@ def evaluate_selfcheck(
         )
 
     if tokenizer is None:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model, cache_dir=str(resolve_cache_dir(model))
-        )
+        from moeuncert.experiments import load_tokenizer_for_data
+        tokenizer = load_tokenizer_for_data(model)
 
     if variant == "nli":
         checker = SelfCheckNLI()

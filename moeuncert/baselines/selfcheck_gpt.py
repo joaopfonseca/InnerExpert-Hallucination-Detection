@@ -40,10 +40,23 @@ class SelfCheckNLI(BaseBaseline):
         from selfcheckgpt.modeling_selfcheck import SelfCheckNLI as _SelfCheckNLI
 
         # Monkey-patch: transformers 5.x removed DebertaV2Tokenizer.batch_encode_plus.
-        # Alias it to __call__ which accepts the same arguments and returns BatchEncoding.
+        # The old API accepted batch_text_or_text_pairs=[(sentence, passage)] for
+        # NLI sentence-pair encoding. The modern __call__ uses text=/text_target=
+        # instead. This shim translates the old calling convention to the new one.
         from transformers import DebertaV2Tokenizer
         if not hasattr(DebertaV2Tokenizer, "batch_encode_plus"):
-            DebertaV2Tokenizer.batch_encode_plus = DebertaV2Tokenizer.__call__
+            def _batch_encode_plus_compat(self, batch_text_or_text_pairs=None, **kwargs):
+                if batch_text_or_text_pairs is not None:
+                    if (
+                        isinstance(batch_text_or_text_pairs, list)
+                        and len(batch_text_or_text_pairs) > 0
+                        and isinstance(batch_text_or_text_pairs[0], tuple)
+                    ):
+                        text = [p[0] for p in batch_text_or_text_pairs]
+                        text_target = [p[1] for p in batch_text_or_text_pairs]
+                        return self(text=text, text_target=text_target, **kwargs)
+                return self(text=batch_text_or_text_pairs, **kwargs)
+            DebertaV2Tokenizer.batch_encode_plus = _batch_encode_plus_compat
 
         if device is None:
             device = torch.device("cpu")
