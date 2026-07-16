@@ -231,6 +231,16 @@ def generate_examples_tex(dfs: Dict[str, pd.DataFrame]) -> str:
         lines.append(r"\textbf{Question:} %s" % escape_latex(question))
         lines.append("")
 
+        # Evidence (shared across both models for the same qid)
+        ev_row = next(
+            (r for r in list(olmoe_rows.values()) + list(gemma_rows.values())
+             if r.get("evidence") and str(r["evidence"]).strip()),
+            None,
+        )
+        if ev_row is not None:
+            lines.append(r"\textbf{Evidence:} %s" % escape_latex(truncate(str(ev_row["evidence"]), 400)))
+            lines.append("")
+
         for model_key, model_label in MODEL_LABELS.items():
             rows = olmoe_rows if model_key == "olmoe" else gemma_rows
             for ev_present in [False, True]:
