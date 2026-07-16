@@ -81,9 +81,22 @@ _LATEX_SPECIAL = {
 }
 
 
-def escape_latex(text: str) -> str:
-    """Escape LaTeX special characters in *text*."""
-    for char, repl in sorted(_LATEX_SPECIAL.items(), key=lambda kv: -len(kv[0])):
+def escape_latex(text: str, escape_braces: bool = True) -> str:
+    """Escape LaTeX special characters in *text*.
+
+    When *escape_braces* is ``False``, curly braces are left as-is
+    (used for prompt templates where ``{placeholder}`` syntax should
+    be visible).
+    """
+    # Replace backslash FIRST so that backslashes introduced by later
+    # replacements (e.g. \_ , \%) are not double-escaped.
+    if "\\" in text:
+        text = text.replace("\\", r"\textbackslash{}")
+    for char, repl in _LATEX_SPECIAL.items():
+        if char == "\\":
+            continue
+        if not escape_braces and char in "{}":
+            continue
         text = text.replace(char, repl)
     return text
 
@@ -474,17 +487,17 @@ def generate_prompt_template_tex() -> str:
     lines.append(r"\small")
     lines.append(r"\textbf{System message:}")
     lines.append(r"\begin{alltt}\small")
-    lines.append(escape_latex(GENERATION_SYSTEM_PROMPT))
+    lines.append(escape_latex(GENERATION_SYSTEM_PROMPT, escape_braces=False))
     lines.append(r"\end{alltt}")
     lines.append("")
     lines.append(r"\textbf{User message (base, no evidence):}")
     lines.append(r"\begin{alltt}\small")
-    lines.append(escape_latex(GENERATION_USER_PROMPT_BASE))
+    lines.append(escape_latex(GENERATION_USER_PROMPT_BASE, escape_braces=False))
     lines.append(r"\end{alltt}")
     lines.append("")
     lines.append(r"\textbf{User message (with evidence):}")
     lines.append(r"\begin{alltt}\small")
-    lines.append(escape_latex(GENERATION_USER_PROMPT_EVIDENCE))
+    lines.append(escape_latex(GENERATION_USER_PROMPT_EVIDENCE, escape_braces=False))
     lines.append(r"\end{alltt}")
     lines.append(r"\end{tcolorbox}")
     lines.append("")
@@ -499,12 +512,12 @@ def generate_prompt_template_tex() -> str:
     lines.append(r"\small")
     lines.append(r"\textbf{System message:}")
     lines.append(r"\begin{alltt}\small")
-    lines.append(escape_latex(JUDGE_SYSTEM_PROMPT))
+    lines.append(escape_latex(JUDGE_SYSTEM_PROMPT, escape_braces=False))
     lines.append(r"\end{alltt}")
     lines.append("")
     lines.append(r"\textbf{User message template:}")
     lines.append(r"\begin{alltt}\small")
-    lines.append(escape_latex(JUDGE_PROMPT_TEMPLATE))
+    lines.append(escape_latex(JUDGE_PROMPT_TEMPLATE, escape_braces=False))
     lines.append(r"\end{alltt}")
     lines.append(r"\end{tcolorbox}")
 
