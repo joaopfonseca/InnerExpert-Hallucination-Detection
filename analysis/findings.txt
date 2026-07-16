@@ -1,0 +1,85 @@
+Findings: LLM-Judge Label Quality on RealtimeQA Training Data
+=============================================================
+Date: 2026-07-16
+Judge: zai-org/GLM-5.1 via DeepInfra
+Models: allenai/OLMoE-1B-7B-0924-Instruct, google/gemma-4-26B-A4B-it
+Dataset: RealtimeQA 2024-2025 (train split)
+N = 4636 rows per model (2318 base + 2318 evidence)
+
+1. OVERALL HALLUCINATION RATES
+   - OLMoE: 83.0% hallucinated (3847/4636)
+   - Gemma 4: 49.4% hallucinated (2290/4636)
+   OLMoE's base hallucination rate is 99.7% — nearly every answer without
+   evidence is flagged as hallucinated.  This is plausible: OLMoE-1B-7B
+   frequently fabricates confidently when it lacks context.  Gemma 4's base
+   rate is 85.4%, still high but more varied.
+
+2. EVIDENCE REDUCES HALLUCINATION (as expected)
+   - OLMoE: base 99.7% → evidence 66.2%
+   - Gemma 4: base 85.4% → evidence 13.3%
+   Evidence dramatically helps Gemma 4 (72-point drop) but OLMoE still
+   hallucinates in 2 of 3 evidence-conditioned answers.  OLMoE tends to
+   rephrase or embellish the evidence with extra (often fabricated) detail,
+   which the judge correctly flags.
+
+3. JUDGE FALSE POSITIVES ON CORRECT TERSE ANSWERS
+   Example: qid=202401058 ("Director of the Year at Palm Springs")
+   - Gemma 4 with evidence answers "Greta Gerwig." — the correct answer.
+   - Judge labels it hallucinated (label=1, conf=0.020).
+   - Span flagged: ["Greta Gerwig"]
+   This is a clear false positive: the judge sees a bare name with no
+   hedging or justification and appears to treat it as unsupported, even
+   though the evidence says "the Barbie director" (which is Greta Gerwig).
+   Low confidence (0.020) suggests the judge is uncertain.  ~324
+   hallucinated labels have confidence < 0.5, many of which are likely
+   similar false positives.
+
+4. JUDGE CORRECTLY IDENTIFIES REFUSAL + FABRICATION
+   Example: qid=2024010515 ("Covid vaccine percentage")
+   - Gemma 4 base: "As of January 2024, there is no single official
+     percentage..." followed by fabricated CDC data.
+   - Judge: label=1, conf=0.952, spans=["As of January 2024", ...]
+   The judge correctly identifies the hedging preamble AND the fabricated
+   statistics as hallucinated spans.
+
+5. JUDGE CORRECTLY LABELS CLEAN REFUSALS AS GROUNDED
+   Example: qid=2024053125 ("new restaurant in Rehoboth Beach")
+   - Gemma 4 base: "I do not have information on a specific new restaurant
+     opening in Rehoboth Beach, Delaware..."
+   - Judge: label=0, conf=0.927
+   The judge recognises honest uncertainty as grounded (not hallucinated).
+   52 clean refusals (Gemma base, label=0) confirm this pattern.
+
+6. VERBOSE ANSWERS WITH EVIDENCE ARE OFTEN FALSE-FLAGGED
+   OLMoE with evidence tends to produce verbose answers that restate the
+   question, paraphrase the evidence, and add extra detail.  The judge
+   frequently labels these as hallucinated even when the core answer is
+   correct.  Example: qid=2025040416 ("norovirus on which cruise ship")
+   - OLMoE evidence: "The luxury cruise ship involved... was the
+     [correct ship name]..." (label=1, conf=0.695)
+   - Gemma evidence: "Queen Mary 2" (label=0, conf=0.018)
+   The judge penalises verbosity/paraphrasing, not just factual errors.
+
+7. CONFIDENCE CALIBRATION
+   - OLMoE: many hallucinated labels have high confidence (>0.5)
+   - Gemma 4: 309 hallucinated-with-evidence labels, most with low
+     confidence (<0.2), suggesting the judge is less sure about Gemma's
+     terse style.
+   The low-confidence labels are the most problematic: they are where
+   false positives (Example 3) and verbosity penalties (Example 6)
+   cluster.  A confidence threshold of 0.5 would remove ~324 questionable
+   labels but also discard some true positives.
+
+8. IMPACT ON DETECTOR TRAINING
+   The high OLMoE base hallucination rate (99.7%) means the detector
+   sees almost no negative examples for OLMoE base condition.  This
+   creates a class-imbalance problem and makes AUROC on the OLMoE base
+   subset nearly uninformative.  Gemma 4's more balanced distribution
+   (85.4% base, 13.3% evidence) provides a better training signal.
+
+9. RECOMMENDATION
+   Consider a confidence-weighted training approach: down-weight
+   labels with confidence < 0.3 to reduce the impact of judge false
+   positives on correct terse answers.  Alternatively, a secondary
+   verification pass for low-confidence labels could improve label
+   quality.
