@@ -341,7 +341,7 @@ def generate_confidence_distribution_tex(dfs: Dict[str, pd.DataFrame]) -> str:
     lines.append(r"Confidence & OLMoE count & OLMoE \% & Gemma count & Gemma \% \\")
     lines.append(r"\midrule")
 
-    bins = [(i / 10, (i + 1) / 10) for i in range(10)]
+    bins = [(i * 0.2, (i + 1) * 0.2) for i in range(5)]
     bin_labels = [
         r"%.1f $\leq$ conf $<$ %.1f" % (lo, hi) for lo, hi in bins
     ]
