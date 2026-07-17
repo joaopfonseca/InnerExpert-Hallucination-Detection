@@ -591,7 +591,6 @@ if __name__ == "__main__":
                 "clf__n_estimators": [300, 500, 1000],
                 "clf__max_depth": [3, 6, 10],
                 "clf__min_samples_leaf": [1, 5],
-                "clf__max_features": ["sqrt", "log2", None]
             },
         },
         "XGBoost": {
@@ -602,11 +601,9 @@ if __name__ == "__main__":
                 verbosity=0,
             ),
             "param_grid": {
-                "clf__n_estimators": [100, 300, 500, 1000],
+                "clf__n_estimators": [300, 500, 1000],
                 "clf__max_depth": [3, 6, 10],
                 "clf__learning_rate": [0.001, 0.01, 0.1],
-                "clf__subsample": [0.8, 1.0],
-                "clf__colsample_bytree": [0.8, 1.0],
             },
         },
         "MLP": {
@@ -623,12 +620,12 @@ if __name__ == "__main__":
         "Transformer": {
             "model": _build_transformer_config(transformer_group_sizes),
             "param_grid": {
-                "clf__module__d_model": [128, 256, 512],
+                "clf__module__d_model": [256, 512],
                 "clf__module__n_heads": [4],
                 "clf__module__n_transformer_layers": [1, 2, 3],
                 "clf__module__dropout": [0.1, 0.3],
                 "clf__optimizer__lr": [1e-3, 1e-4],
-                "clf__max_epochs": [200, 500],
+                "clf__max_epochs": [500],
             },
         },
     }

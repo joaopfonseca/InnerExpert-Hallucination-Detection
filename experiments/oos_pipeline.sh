@@ -111,15 +111,15 @@ for DS in ${OOS_DATASETS}; do
             --label-model "${LABEL_MODEL}"
     fi
 
-    # --- 7.0: Evaluate ---
+    # --- 6.2: Evaluate ---
     if [[ -d "${PREDICTIONS_DIR}" && -f "${PREDICTIONS_DIR}/ground_truth.parquet" ]]; then
-        log "SKIP 7.0: ${PREDICTIONS_DIR}/ground_truth.parquet already exists"
+        log "SKIP 6.2: ${PREDICTIONS_DIR}/ground_truth.parquet already exists"
     else
         SAMPLED_FLAGS=""
         if [[ "${SAMPLED}" != "1" ]]; then
             SAMPLED_FLAGS="--skip-sampled"
         fi
-        run_script "7.0-oos-evaluation.py" \
+        run_script "6.2-oos-evaluation.py" \
             --dataset "${DS}" \
             --model "${MODEL}" \
             --label-model "${LABEL_MODEL}" \
@@ -130,15 +130,15 @@ for DS in ${OOS_DATASETS}; do
 done
 
 # ---------------------------------------------------------------------------
-# 8.0: Cross-dataset analysis
+# 6.3: Cross-dataset analysis
 # ---------------------------------------------------------------------------
-log "8.0 — CROSS-DATASET ANALYSIS"
+log "6.3 — CROSS-DATASET ANALYSIS"
 
 COMPARISON_DIR="data/oos-comparison"
 if [[ -f "${COMPARISON_DIR}/results.json" ]]; then
-    log "SKIP 8.0: ${COMPARISON_DIR}/results.json already exists"
+    log "SKIP 6.3: ${COMPARISON_DIR}/results.json already exists"
 else
-    run_script "8.0-oos-analysis.py" \
+    run_script "6.3-oos-analysis.py" \
         --datasets ${OOS_DATASETS} \
         --model "${MODEL}" \
         --models-dir "${MODEL_DIR}" \
