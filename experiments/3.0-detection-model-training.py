@@ -671,37 +671,41 @@ if __name__ == "__main__":
         search.fit(X_all, y_all)
 
         best = search.best_estimator_
-        y_proba_val = best.predict_proba(X_val)[:, 1]
 
-        # Compute metrics at optimal threshold (on val)
-        val_metrics = compute_metrics_at_threshold(y_val, y_proba_val, threshold=0.5)
-
-        # Also find optimal threshold for F1 on val
+        # Find optimal F1 threshold on X_all (train+val), consistent with the
+        # refit model which was trained on X_all.
         from sklearn.metrics import precision_recall_curve
-        precisions, recalls, thresholds = precision_recall_curve(y_val, y_proba_val)
+        y_proba_all = best.predict_proba(X_all)[:, 1]
+        precisions, recalls, thresholds = precision_recall_curve(y_all, y_proba_all)
         f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
         opt_idx = np.argmax(f1_scores)
         opt_threshold = thresholds[opt_idx] if opt_idx < len(thresholds) else 0.5
-        opt_metrics = compute_metrics_at_threshold(y_val, y_proba_val, threshold=opt_threshold)
+        opt_metrics = compute_metrics_at_threshold(y_all, y_proba_all, threshold=opt_threshold)
+
+        # Report clean val metrics for monitoring (model was refit on val,
+        # so these are slightly optimistic but still useful as a sanity check).
+        y_proba_val = best.predict_proba(X_val)[:, 1]
+        val_metrics = compute_metrics_at_threshold(y_val, y_proba_val, threshold=0.5)
 
         print(f"  Best params: {search.best_params_}")
-        print(f"  Best val F1: {search.best_score_:.4f}")
-        print(f"  Val F1 @ 0.5: {val_metrics['f1']:.4f}")
-        print(f"  Val F1 @ optimal (t={opt_threshold:.3f}): {opt_metrics['f1']:.4f}")
-        print(f"  Val AUROC: {opt_metrics['auroc']:.4f}")
-        print(f"  Val AUPRC: {opt_metrics['auprc']:.4f}")
-        print(f"  Val TPR@5%FPR: {opt_metrics['tpr_at_5fpr']:.4f}")
-        print(f"  Val Accuracy: {opt_metrics['accuracy']:.4f}")
+        print(f"  Best val F1 (param selection): {search.best_score_:.4f}")
+        print(f"  Train+val F1 @ optimal (t={opt_threshold:.3f}): {opt_metrics['f1']:.4f}")
+        print(f"  Train+val AUROC: {opt_metrics['auroc']:.4f}")
+        print(f"  Train+val AUPRC: {opt_metrics['auprc']:.4f}")
+        print(f"  Train+val TPR@5%FPR: {opt_metrics['tpr_at_5fpr']:.4f}")
+        print(f"  Train+val Accuracy: {opt_metrics['accuracy']:.4f}")
+        print(f"  Val F1 @ 0.5 (monitoring): {val_metrics['f1']:.4f}")
 
         results[name] = {
             "best_params": search.best_params_,
             "val_f1": float(search.best_score_),
-            "val_metrics": opt_metrics,
+            "trainval_metrics": opt_metrics,
+            "val_metrics_monitoring": val_metrics,
             "optimal_threshold": float(opt_threshold),
         }
         estimators[name] = best
 
-        # Track best model by F1 on validation
+        # Track best model by F1 on train+val (consistent with saved model)
         if opt_metrics['f1'] > best_val_f1:
             best_val_f1 = opt_metrics['f1']
             best_model_name = name
@@ -712,7 +716,7 @@ if __name__ == "__main__":
     # =========================================================================
 
     print(f"\n{'=' * 70}")
-    print(f"BEST MODEL: {best_model_name} (Val F1: {best_val_f1:.4f})")
+    print(f"BEST MODEL: {best_model_name} (Train+val F1: {best_val_f1:.4f})")
     print(f"{'=' * 70}")
 
     # Save model
@@ -753,7 +757,7 @@ if __name__ == "__main__":
     # Save summary
     summary = {
         "best_model": best_model_name,
-        "best_val_f1": best_val_f1,
+        "best_trainval_f1": best_val_f1,
         "train_tokens": int(len(y_train)),
         "val_tokens": int(len(y_val)),
         "train_hallucination_rate": float(y_train.mean()),
@@ -763,7 +767,8 @@ if __name__ == "__main__":
         "detectors": [
             {
                 "family": name,
-                "val_f1": results[name]["val_metrics"]["f1"],
+                "trainval_f1": results[name]["trainval_metrics"]["f1"],
+                "val_f1_monitoring": results[name]["val_metrics_monitoring"]["f1"],
                 "optimal_threshold": results[name]["optimal_threshold"],
                 "is_best": name == best_model_name,
             }
