@@ -41,7 +41,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import (
     GridSearchCV,
-    GroupKFold,
+    PredefinedSplit,
     StratifiedShuffleSplit,
 )
 from sklearn.neural_network import MLPClassifier
@@ -565,6 +565,17 @@ if __name__ == "__main__":
     print(f"  Train tokens: {len(y_train)}")
     print(f"  Val tokens: {len(y_val)}")
 
+    # Combine train+val for GridSearchCV with PredefinedSplit.
+    # Rows marked -1 are training; rows marked 0 are the single validation
+    # fold used for hyperparameter scoring.
+    X_all = np.vstack([X_train, X_val])
+    y_all = np.concatenate([y_train, y_val])
+    test_fold = np.concatenate([
+        np.full(len(y_train), -1),
+        np.zeros(len(y_val), dtype=int),
+    ])
+    ps = PredefinedSplit(test_fold)
+
     # =========================================================================
     # Feature normalization: scale all except expert_usage
     # =========================================================================
@@ -575,8 +586,6 @@ if __name__ == "__main__":
     # =========================================================================
     # Model configs
     # =========================================================================
-
-    group_kfold = GroupKFold(n_splits=5)
 
     model_configs = {
         "LogisticRegression": {
@@ -635,7 +644,7 @@ if __name__ == "__main__":
     # =========================================================================
 
     print(f"\n{'=' * 70}")
-    print("TRAINING MODELS (F1-optimized via GroupKFold CV)")
+    print("TRAINING MODELS (F1-optimized via validation set)")
     print(f"{'=' * 70}")
 
     results = {}
@@ -654,12 +663,12 @@ if __name__ == "__main__":
         search = GridSearchCV(
             pipeline,
             param_grid,
-            cv=group_kfold.split(X_train, y_train, groups=qids_train),
+            cv=ps,
             scoring="f1",
             n_jobs=8,
             verbose=0,
         )
-        search.fit(X_train, y_train)
+        search.fit(X_all, y_all)
 
         best = search.best_estimator_
         y_proba_val = best.predict_proba(X_val)[:, 1]
@@ -676,7 +685,7 @@ if __name__ == "__main__":
         opt_metrics = compute_metrics_at_threshold(y_val, y_proba_val, threshold=opt_threshold)
 
         print(f"  Best params: {search.best_params_}")
-        print(f"  Best CV F1: {search.best_score_:.4f}")
+        print(f"  Best val F1: {search.best_score_:.4f}")
         print(f"  Val F1 @ 0.5: {val_metrics['f1']:.4f}")
         print(f"  Val F1 @ optimal (t={opt_threshold:.3f}): {opt_metrics['f1']:.4f}")
         print(f"  Val AUROC: {opt_metrics['auroc']:.4f}")
@@ -686,7 +695,7 @@ if __name__ == "__main__":
 
         results[name] = {
             "best_params": search.best_params_,
-            "cv_f1": float(search.best_score_),
+            "val_f1": float(search.best_score_),
             "val_metrics": opt_metrics,
             "optimal_threshold": float(opt_threshold),
         }
