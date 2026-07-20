@@ -242,7 +242,7 @@ def tokenize_with_adapter(tokenizer, df, adapter, with_evidence=False):
     """
     dataset = Dataset.from_pandas(df)
     tokenized = dataset.map(
-        lambda examples: adapter.tokenize(tokenizer, pd.DataFrame(examples), with_evidence=with_evidence),
+        lambda examples: adapter.tokenize(tokenizer, pd.DataFrame(dict(examples)), with_evidence=with_evidence),
         batched=True,
         remove_columns=[c for c in dataset.column_names if c != "question_id"],
     )
