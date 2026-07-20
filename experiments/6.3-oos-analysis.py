@@ -8,7 +8,7 @@ a cross-dataset comparison table plus aggregated summary.
 Reuses the metric function from ``moeuncert.evaluation.metrics`` (also
 used by 5.0 for the in-distribution analysis).
 
-Outputs (to ``--output-dir``, default ``data/oos-comparison/``):
+Outputs (to ``--output-dir``, default ``data/oos-comparison/{model_slug}/``):
   - comparison_table.md          — Markdown table, grouped by dataset
   - comparison_table_answer.csv  — One row per (dataset, method)
   - comparison_table_token.csv   — One row per (dataset, method)
@@ -302,8 +302,8 @@ def main():
         help="Directory with trained models (for thresholds.json)",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("data/oos-comparison"),
-        help="Output directory for comparison tables + plots",
+        "--output-dir", type=Path, default=None,
+        help="Output directory for comparison tables + plots (default: data/oos-comparison/{model_slug})",
     )
     parser.add_argument(
         "--thresholds-file", type=Path, default=None,
@@ -323,6 +323,11 @@ def main():
     print(f"Model: {args.model}")
 
     model_slug = resolve_model_slug(args.model)
+
+    # Resolve output directory (default: model-specific subdir)
+    if args.output_dir is None:
+        args.output_dir = Path("data") / "oos-comparison" / model_slug
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Load thresholds (optional) --------------------------------------
     thresholds: Optional[Dict[str, Dict]] = None
@@ -393,8 +398,6 @@ def main():
         return
 
     # --- Build comparison tables ------------------------------------------
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
     answer_csv = pd.concat(all_answer_dfs, ignore_index=True)
     token_csv = pd.concat(all_token_dfs, ignore_index=True)
 

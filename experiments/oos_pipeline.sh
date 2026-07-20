@@ -137,7 +137,7 @@ done
 # ---------------------------------------------------------------------------
 log "6.3 — CROSS-DATASET ANALYSIS"
 
-COMPARISON_DIR="data/oos-comparison"
+COMPARISON_DIR="data/oos-comparison/${MODEL_SLUG}"
 if [[ -f "${COMPARISON_DIR}/results.json" ]]; then
     log "SKIP 6.3: ${COMPARISON_DIR}/results.json already exists"
 else
