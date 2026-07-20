@@ -561,7 +561,11 @@ def main():
                 merged = gt_answer.merge(pred_df[["question_id", score_col]], on="question_id", how="inner")
                 if len(merged) == 0 or len(np.unique(merged["label"])) < 2:
                     continue
-                fpr, tpr, _ = roc_curve(merged["label"].values, merged[score_col].values)
+                scores = np.nan_to_num(
+                    merged[score_col].values.astype(np.float64),
+                    nan=0.0, posinf=1e10, neginf=0.0,
+                )
+                fpr, tpr, _ = roc_curve(merged["label"].values, scores)
                 ax.plot(fpr, tpr, label=f"{method} (AUC={metrics['auroc']:.3f})")
                 plotted = True
 
