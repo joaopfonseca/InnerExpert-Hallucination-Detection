@@ -126,7 +126,7 @@ for DS in ${OOS_DATASETS}; do
             --dataset "${DS}" \
             --model "${MODEL}" \
             --label-model "${LABEL_MODEL}" \
-            --models-dir "${MODEL_DIR}" \
+            --models-dir "models" \
             --num-samples "${NUM_SAMPLES}" \
             ${SAMPLED_FLAGS}
     fi

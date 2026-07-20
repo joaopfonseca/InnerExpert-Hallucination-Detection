@@ -94,6 +94,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Load .env for DEEPINFRA_API_KEY
+    from dotenv import load_dotenv
+    load_dotenv()
+
     print(f"{'=' * 70}")
     print(f"6.1 — OOS LABELING ({args.dataset})")
     print(f"{'=' * 70}")
