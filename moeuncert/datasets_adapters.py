@@ -208,9 +208,9 @@ class SQuADAdapter(OOSDatasetAdapter):
 class TruthfulQAAdapter(OOSDatasetAdapter):
     name = "truthfulqa"
     slug = "oos-truthfulqa"
-    question_col = "question"
+    question_col = "Question"
     evidence_col = None
-    answer_col = "best_answer"
+    answer_col = "Best Answer"
     id_col = None
     has_evidence = False
     task_type = "qa"
@@ -246,7 +246,7 @@ class FreshQAAdapter(OOSDatasetAdapter):
     slug = "oos-freshqa"
     question_col = "question"
     evidence_col = None  # may be set at runtime if column exists
-    answer_col = "answer"
+    answer_col = "answer_0"  # primary answer; remaining answers are alternatives
     id_col = None
     has_evidence = False  # set dynamically in fetch
     task_type = "qa"
