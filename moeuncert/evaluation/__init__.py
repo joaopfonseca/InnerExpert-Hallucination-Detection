@@ -8,7 +8,9 @@ the RealtimeQA pipeline (4.0/5.0) and the OOS cross-dataset pipeline
 """
 
 from .predictions import (
+    build_composite_qids,
     build_ground_truth,
+    build_label_lookup,
     evaluate_detector,
     evaluate_halunet,
     evaluate_llm_check,
@@ -20,7 +22,9 @@ from .predictions import (
 from .metrics import compute_ece, compute_metrics_for_predictions
 
 __all__ = [
+    "build_composite_qids",
     "build_ground_truth",
+    "build_label_lookup",
     "evaluate_detector",
     "evaluate_halunet",
     "evaluate_llm_check",
