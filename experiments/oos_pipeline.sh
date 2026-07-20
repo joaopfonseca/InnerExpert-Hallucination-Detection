@@ -83,7 +83,7 @@ for DS in ${OOS_DATASETS}; do
 
     DATA_DIR="data/oos-${DS}/${MODEL_SLUG}"
     RESULTS_FILE="${DATA_DIR}/results.parquet"
-    LABEL_FILE="${DATA_DIR}/results_labeled_$(echo "${LABEL_MODEL}" | tr '/' '__').parquet"
+    LABEL_FILE="${DATA_DIR}/results_labeled_$(echo "${LABEL_MODEL}" | sed 's|/|__|g').parquet"
     PREDICTIONS_DIR="${DATA_DIR}/predictions"
 
     # --- 6.0: Generate ---
