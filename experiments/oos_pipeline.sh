@@ -32,6 +32,7 @@ OOS_DATASETS="${OOS_DATASETS:-squad truthfulqa nq_open freshqa}"
 NUM_SAMPLES="${NUM_SAMPLES:-5}"
 SAMPLED="${SAMPLED:-1}"
 BATCH_SIZE="${BATCH_SIZE:-6}"
+MAX_SAMPLES="${MAX_SAMPLES:-200}"
 
 MODEL_SLUG="$(derive_model_slug "${MODEL}")"
 MODEL_DIR="models/${MODEL_SLUG}"
@@ -72,6 +73,7 @@ echo "Model:        ${MODEL}"
 echo "Datasets:     ${OOS_DATASETS}"
 echo "Num samples:  ${NUM_SAMPLES}"
 echo "Sampled:      ${SAMPLED}"
+echo "Max samples:  ${MAX_SAMPLES}"
 
 # ---------------------------------------------------------------------------
 # Per-dataset: 6.0 (generate) + 6.1 (label) + 7.0 (evaluate)
@@ -98,6 +100,7 @@ for DS in ${OOS_DATASETS}; do
             --quantize "${QUANTIZE}" \
             --max-new-tokens "${MAX_NEW_TOKENS}" \
             --batch-size "${BATCH_SIZE}" \
+            --max-samples "${MAX_SAMPLES}" \
             ${SAMPLED_FLAGS}
     fi
 

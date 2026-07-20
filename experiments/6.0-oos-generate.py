@@ -337,6 +337,10 @@ def main():
         "--return-baseline-features", action="store_true", default=True,
         help="Compute log_likelihoods/entropies/perplexity/last_hidden_states (default: on)",
     )
+    parser.add_argument(
+        "--max-samples", type=int, default=None,
+        help="Randomly sample at most N questions from the dataset (default: all)",
+    )
 
     args = parser.parse_args()
 
@@ -356,6 +360,10 @@ def main():
     df = adapter.to_common_schema(df_raw)
     print(f"  {len(df)} rows")
     print(f"  Columns: {list(df.columns)}")
+
+    if args.max_samples is not None and len(df) > args.max_samples:
+        df = df.sample(n=args.max_samples, random_state=42).reset_index(drop=True)
+        print(f"  Sampled {len(df)} rows (max_samples={args.max_samples})")
 
     # --- Setup model ------------------------------------------------------
     print("\n[2/5] Loading model + tokenizer...")
