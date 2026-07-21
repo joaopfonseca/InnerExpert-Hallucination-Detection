@@ -121,7 +121,7 @@ def main():
     # expand_base_rag_rows splits _rag columns into separate rows with
     # evidence_present flag.  For datasets without evidence (base-only),
     # this just passes through (no _rag columns → no expansion).
-    df_expanded = expand_base_rag_rows(df)
+    df_expanded = expand_base_rag_rows(df, has_evidence=adapter.has_evidence)
     print(f"  After base/evidence expansion: {len(df_expanded)} rows")
 
     # --- LLM-as-judge labeling --------------------------------------------

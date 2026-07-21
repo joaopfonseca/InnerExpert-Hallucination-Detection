@@ -251,6 +251,7 @@ def evaluate_semantic_uncertainty(
     num_samples: int = 5,
     sampled: Optional[Dict] = None,
     tokenizer=None,
+    evidence_present: int = 0,
 ) -> pd.DataFrame:
     """Evaluate SemanticUncertainty on sampled test data.
 
@@ -267,7 +268,8 @@ def evaluate_semantic_uncertainty(
     if sampled is None:
         from moeuncert.experiments.data_loading import load_sampled_outputs
         sampled = load_sampled_outputs(
-            data_root, test_years, test_month, model, num_samples=num_samples
+            data_root, test_years, test_month, model,
+            num_samples=num_samples, with_evidence=bool(evidence_present),
         )
 
     if tokenizer is None:
@@ -286,7 +288,7 @@ def evaluate_semantic_uncertainty(
             score = su.predict_proba(responses, logprobs)
             clean_qid = _normalize_question_id_value(qid)
             rows.append({
-                "question_id": f"{clean_qid}::0",
+                "question_id": f"{clean_qid}::{evidence_present}",
                 "score": float(np.nan_to_num(score, posinf=1e10, neginf=-1e10)),
             })
         except Exception as e:
@@ -303,6 +305,7 @@ def evaluate_semantic_energy(
     num_samples: int = 5,
     sampled: Optional[Dict] = None,
     tokenizer=None,
+    evidence_present: int = 0,
 ) -> pd.DataFrame:
     """Evaluate SemanticEnergy on sampled test data.
 
@@ -317,7 +320,8 @@ def evaluate_semantic_energy(
     if sampled is None:
         from moeuncert.experiments.data_loading import load_sampled_outputs
         sampled = load_sampled_outputs(
-            data_root, test_years, test_month, model, num_samples=num_samples
+            data_root, test_years, test_month, model,
+            num_samples=num_samples, with_evidence=bool(evidence_present),
         )
 
     if tokenizer is None:
@@ -349,7 +353,7 @@ def evaluate_semantic_energy(
             )
             clean_qid = _normalize_question_id_value(qid)
             rows.append({
-                "question_id": f"{clean_qid}::0",
+                "question_id": f"{clean_qid}::{evidence_present}",
                 "score": float(np.nan_to_num(score, posinf=1e10, neginf=-1e10)),
             })
         except Exception as e:
@@ -368,6 +372,7 @@ def evaluate_selfcheck(
     num_samples: int = 5,
     sampled: Optional[Dict] = None,
     tokenizer=None,
+    evidence_present: int = 0,
 ) -> pd.DataFrame:
     """Evaluate SelfCheckGPT (NLI or Prompt variant) on sampled test data.
 
@@ -378,7 +383,8 @@ def evaluate_selfcheck(
     if sampled is None:
         from moeuncert.experiments.data_loading import load_sampled_outputs
         sampled = load_sampled_outputs(
-            data_root, test_years, test_month, model, num_samples=num_samples
+            data_root, test_years, test_month, model,
+            num_samples=num_samples, with_evidence=bool(evidence_present),
         )
 
     if tokenizer is None:
@@ -406,7 +412,7 @@ def evaluate_selfcheck(
             scores = checker.predict_proba([target], sampled_passages)
             clean_qid = _normalize_question_id_value(qid)
             rows.append({
-                "question_id": f"{clean_qid}::0",
+                "question_id": f"{clean_qid}::{evidence_present}",
                 "score": float(np.nan_to_num(scores.mean(), posinf=1.0, neginf=0.0)),
             })
         except Exception as e:

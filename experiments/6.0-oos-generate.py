@@ -341,6 +341,10 @@ def main():
         "--max-samples", type=int, default=None,
         help="Randomly sample at most N questions from the dataset (default: all)",
     )
+    parser.add_argument(
+        "--only-sampled-evidence", action="store_true", default=False,
+        help="Skip base/evidence/base-sampled generation; only run evidence sampled generation",
+    )
 
     args = parser.parse_args()
 
@@ -397,13 +401,20 @@ def main():
     # XSum: evidence-only (summarization framing — document IS the input).
     # Datasets with has_evidence=True: base + evidence passes.
     # Datasets with has_evidence=False: base-only.
-    run_base = True
-    run_evidence = adapter.has_evidence
+    #
+    # --only-sampled-evidence: skip everything except evidence sampled
+    # generation (used to add evidence sampling to an existing run).
+    only_ev_sampling = args.only_sampled_evidence
+    run_base = not only_ev_sampling
+    run_evidence = adapter.has_evidence and not only_ev_sampling
 
     if adapter.task_type == "summarization":
-        # Summarization: no base pass (can't summarize without the document)
         run_base = False
         run_evidence = True
+
+    if only_ev_sampling and not adapter.has_evidence:
+        print("\n--only-sampled-evidence requires a dataset with evidence. Exiting.")
+        return
 
     if run_base:
         print("\n[3/5] Base generation (no evidence)...")
@@ -418,7 +429,7 @@ def main():
         )
         print(f"  Base outputs saved to {base_dir}")
     else:
-        print("\n[3/5] Skipping base generation (no base pass for this dataset)")
+        print("\n[3/5] Skipping base generation")
 
     if run_evidence:
         print("\n[4/5] Evidence generation (with evidence)...")
@@ -433,10 +444,10 @@ def main():
         )
         print(f"  Evidence outputs saved to {ev_dir}")
     else:
-        print("\n[4/5] Skipping evidence generation (no evidence field)")
+        print("\n[4/5] Skipping evidence generation")
 
     # --- Sampled generation (optional) -----------------------------------
-    if args.num_samples > 0:
+    if args.num_samples > 0 and not only_ev_sampling:
         print(f"\n[4b/5] Sampled generation ({args.num_samples} samples)...")
         # Sample from the base pass (no evidence) — matches 1.1 behaviour
         if run_base:
@@ -456,7 +467,31 @@ def main():
         )
         print(f"  Sampled outputs saved to {sampled_dir}")
     else:
-        print("\n[4b/5] Skipping sampled generation (num-samples=0)")
+        if not only_ev_sampling:
+            print("\n[4b/5] Skipping sampled generation (num-samples=0)")
+
+    # --- Evidence sampled generation (optional) ---------------------------
+    if args.num_samples > 0 and adapter.has_evidence:
+        print(f"\n[4c/5] Evidence sampled generation ({args.num_samples} samples)...")
+        tokenized_se = tokenize_with_adapter(tokenizer, df, adapter, with_evidence=True)
+        sampled_ev_dir = model_dir / "sampled_generation_evidence"
+        sampled_ev_dir.mkdir(parents=True, exist_ok=True)
+        run_batch_sampling(
+            tokenized_se, model_monitor, tokenizer,
+            batch_size=max(1, args.batch_size // 2),
+            save_path=sampled_ev_dir,
+            max_new_tokens=args.max_new_tokens,
+            num_samples=args.num_samples,
+            temperature=args.temperature,
+            top_p=args.top_p,
+        )
+        print(f"  Evidence sampled outputs saved to {sampled_ev_dir}")
+
+    if only_ev_sampling:
+        print(f"\n{'=' * 70}")
+        print("EVIDENCE SAMPLING COMPLETE")
+        print(f"{'=' * 70}")
+        return
 
     # --- Compute ROUGE/BERTScore/BLEU + save results.parquet -------------
     print("\n[5/5] Computing scores + saving results.parquet...")

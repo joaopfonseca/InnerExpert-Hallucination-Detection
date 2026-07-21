@@ -79,11 +79,20 @@ DEFAULT_MODEL = "allenai/OLMoE-1B-7B-0924-Instruct"
 METRIC_PREFIXES = ("rouge", "bert", "bleu")
 
 
-def expand_base_rag_rows(df: pd.DataFrame) -> pd.DataFrame:
+def expand_base_rag_rows(df: pd.DataFrame, has_evidence: bool = True) -> pd.DataFrame:
     """
     Expand rows with both base and RAG metrics into separate rows for each, with an 
     evidence_present flag.
+
+    When *has_evidence* is ``False``, the dataset has no evidence condition.
+    Only base rows are returned (with ``evidence_present=0``) and ``_rag``
+    columns are dropped.
     """
+    if not has_evidence:
+        df_base = df.loc[:, ~df.columns.str.endswith("_rag")].copy()
+        df_base["evidence_present"] = 0
+        return df_base
+
     RAG_COLS = df.columns[df.columns.str.endswith("_rag")]
     NON_RAG_COLS = RAG_COLS.str.replace("_rag", "")
 

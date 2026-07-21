@@ -589,6 +589,7 @@ def load_sampled_outputs(
     month: Optional[int],
     model: str,
     num_samples: int = 5,
+    with_evidence: bool = False,
 ) -> Dict[str, List]:
     """Load sampled generation outputs across multiple years.
 
@@ -633,7 +634,8 @@ def load_sampled_outputs(
     combined = None
     for year in years:
         _, _, dataset_slug = resolve_dataset_slug([year], month)
-        sampled_dir = data_root / dataset_slug / model_slug / "sampled_generation"
+        sampled_subdir = "sampled_generation_evidence" if with_evidence else "sampled_generation"
+        sampled_dir = data_root / dataset_slug / model_slug / sampled_subdir
 
         if not sampled_dir.exists():
             print(f"  WARNING: {sampled_dir} not found, skipping year {year}")
@@ -1256,6 +1258,7 @@ def stream_sampled_outputs(
     model: str,
     num_samples: int = 5,
     filter_keys: Optional[Set[str]] = None,
+    with_evidence: bool = False,
 ) -> Dict[str, List]:
     """Streaming counterpart to ``load_sampled_outputs``.
 
@@ -1299,7 +1302,8 @@ def stream_sampled_outputs(
     print(f"\nLoading sampled outputs for years (streaming): {years}")
     for year in years:
         _, _, dataset_slug = resolve_dataset_slug([year], month)
-        sampled_dir = data_root / dataset_slug / model_slug / "sampled_generation"
+        sampled_subdir = "sampled_generation_evidence" if with_evidence else "sampled_generation"
+        sampled_dir = data_root / dataset_slug / model_slug / sampled_subdir
 
         if not sampled_dir.exists():
             print(f"  WARNING: {sampled_dir} not found, skipping year {year}")

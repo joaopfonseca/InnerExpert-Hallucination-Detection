@@ -62,16 +62,16 @@ from moeuncert.evaluation import (
 # ---------------------------------------------------------------------------
 
 
-def load_oos_sampled_outputs(data_dir: Path, num_samples: int = 5) -> dict:
+def load_oos_sampled_outputs(data_dir: Path, num_samples: int = 5, subdir: str = "sampled_generation") -> dict:
     """Load sampled outputs from an OOS dataset directory.
 
     ``data_dir`` is ``data/<dataset_slug>/<model_slug>/`` containing a
-    ``sampled_generation/`` subdirectory.
+    ``sampled_generation/`` (or ``sampled_generation_evidence/``) subdirectory.
     """
     from moeuncert.experiments.utils import read_and_collate_outputs
     from moeuncert.experiments.data_loading import _normalize_question_id_value
 
-    sampled_dir = data_dir / "sampled_generation"
+    sampled_dir = data_dir / subdir
     if not sampled_dir.exists():
         return {"responses_by_qid": {}, "log_probs_by_qid": {}, "logits_by_qid": {}}
 
@@ -266,47 +266,75 @@ def main():
         print("\n[5-7] Loading sampled data...")
         sampled = load_oos_sampled_outputs(model_dir, num_samples=args.num_samples)
         n_qids = len(sampled.get("responses_by_qid", {}))
-        print(f"  {n_qids} questions with sampled responses")
+        print(f"  {n_qids} questions with sampled responses (base)")
 
-        if n_qids == 0:
+        # Load evidence sampled data if available
+        sampled_ev = None
+        sampled_ev_dir = model_dir / "sampled_generation_evidence"
+        if sampled_ev_dir.exists():
+            sampled_ev = load_oos_sampled_outputs(model_dir, num_samples=args.num_samples, subdir="sampled_generation_evidence")
+            n_qids_ev = len(sampled_ev.get("responses_by_qid", {}))
+            print(f"  {n_qids_ev} questions with sampled responses (evidence)")
+
+        if n_qids == 0 and (sampled_ev is None or len(sampled_ev.get("responses_by_qid", {})) == 0):
             print("  No sampled data found — skipping SU/SE/SelfCheck")
         else:
-            # SemanticUncertainty
-            print("\n[5/7] SemanticUncertainty ...")
-            try:
-                su_df = evaluate_semantic_uncertainty(
-                    args.model, sampled=sampled, tokenizer=tokenizer,
-                )
-                path = predictions_dir / "semantic_uncertainty.parquet"
-                su_df.to_parquet(path, index=False)
-                print(f"  Saved {path} ({len(su_df)} rows)")
-            except Exception as e:
-                print(f"  SKIPPED — error: {e}")
+            for ev_present, sampled_data, label in [
+                (0, sampled, "base"),
+                (1, sampled_ev, "evidence"),
+            ]:
+                if sampled_data is None or len(sampled_data.get("responses_by_qid", {})) == 0:
+                    continue
+                print(f"\n  [{label} condition]")
 
-            # SemanticEnergy
-            print("\n[6/7] SemanticEnergy ...")
-            try:
-                se_df = evaluate_semantic_energy(
-                    args.model, sampled=sampled, tokenizer=tokenizer,
-                )
-                path = predictions_dir / "semantic_energy.parquet"
-                se_df.to_parquet(path, index=False)
-                print(f"  Saved {path} ({len(se_df)} rows)")
-            except Exception as e:
-                print(f"  SKIPPED — error: {e}")
-
-            # SelfCheckGPT
-            print("\n[7/7] SelfCheckGPT ...")
-            for variant in ["nli", "prompt"]:
+                # SemanticUncertainty
+                print(f"\n[5/7] SemanticUncertainty ({label}) ...")
                 try:
-                    sc_df = evaluate_selfcheck(
-                        args.model, variant=variant, sampled=sampled, tokenizer=tokenizer,
+                    su_df = evaluate_semantic_uncertainty(
+                        args.model, sampled=sampled_data, tokenizer=tokenizer,
+                        evidence_present=ev_present,
                     )
-                    path = predictions_dir / f"selfcheck_{variant}.parquet"
-                    sc_df.to_parquet(path, index=False)
-                    print(f"  Saved {path} ({len(sc_df)} rows)")
+                    path = predictions_dir / "semantic_uncertainty.parquet"
+                    if path.exists() and ev_present == 1:
+                        existing = pd.read_parquet(path)
+                        su_df = pd.concat([existing, su_df], ignore_index=True)
+                    su_df.to_parquet(path, index=False)
+                    print(f"  Saved {path} ({len(su_df)} rows)")
                 except Exception as e:
-                    print(f"  selfcheck_{variant} SKIPPED — error: {e}")
+                    print(f"  SKIPPED — error: {e}")
+
+                # SemanticEnergy
+                print(f"\n[6/7] SemanticEnergy ({label}) ...")
+                try:
+                    se_df = evaluate_semantic_energy(
+                        args.model, sampled=sampled_data, tokenizer=tokenizer,
+                        evidence_present=ev_present,
+                    )
+                    path = predictions_dir / "semantic_energy.parquet"
+                    if path.exists() and ev_present == 1:
+                        existing = pd.read_parquet(path)
+                        se_df = pd.concat([existing, se_df], ignore_index=True)
+                    se_df.to_parquet(path, index=False)
+                    print(f"  Saved {path} ({len(se_df)} rows)")
+                except Exception as e:
+                    print(f"  SKIPPED — error: {e}")
+
+                # SelfCheckGPT
+                print(f"\n[7/7] SelfCheckGPT ({label}) ...")
+                for variant in ["nli", "prompt"]:
+                    try:
+                        sc_df = evaluate_selfcheck(
+                            args.model, variant=variant, sampled=sampled_data,
+                            tokenizer=tokenizer, evidence_present=ev_present,
+                        )
+                        path = predictions_dir / f"selfcheck_{variant}.parquet"
+                        if path.exists() and ev_present == 1:
+                            existing = pd.read_parquet(path)
+                            sc_df = pd.concat([existing, sc_df], ignore_index=True)
+                        sc_df.to_parquet(path, index=False)
+                        print(f"  Saved {path} ({len(sc_df)} rows)")
+                    except Exception as e:
+                        print(f"  selfcheck_{variant} SKIPPED — error: {e}")
 
     # --- Ground Truth -----------------------------------------------------
     print("\n[GT] Building ground truth ...")

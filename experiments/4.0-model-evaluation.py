@@ -237,46 +237,71 @@ def main():
     if args.skip_sampled:
         print("\n[5-7] Skipping sampled-data methods (-skip-sampled)")
     else:
-        # SemanticUncertainty
-        print("\n[5/7] SemanticUncertainty ...")
-        try:
-            su_df = evaluate_semantic_uncertainty(
-                args.model, args.test_years, args.test_month,
-                args.data_root, num_samples=args.num_samples,
-            )
-            path = predictions_dir / "semantic_uncertainty.parquet"
-            su_df.to_parquet(path, index=False)
-            print(f"  Saved {path} ({len(su_df)} rows)")
-        except Exception as e:
-            print(f"  SKIPPED - error: {e}")
+        # Check if evidence sampled data exists
+        model_slug_4 = resolve_model_slug(args.model)
+        _, _, dataset_slug_4 = resolve_dataset_slug(args.test_years, args.test_month)
+        sampled_ev_dir = args.data_root / dataset_slug_4 / model_slug_4 / "sampled_generation_evidence"
+        has_ev_sampling = sampled_ev_dir.exists()
 
-        # SemanticEnergy
-        print("\n[6/7] SemanticEnergy ...")
-        try:
-            se_df = evaluate_semantic_energy(
-                args.model, args.test_years, args.test_month,
-                args.data_root, num_samples=args.num_samples,
-            )
-            path = predictions_dir / "semantic_energy.parquet"
-            se_df.to_parquet(path, index=False)
-            print(f"  Saved {path} ({len(se_df)} rows)")
-        except Exception as e:
-            print(f"  SKIPPED - error: {e}")
+        conditions = [(0, "base")]
+        if has_ev_sampling:
+            conditions.append((1, "evidence"))
 
-        # SelfCheckGPT (NLI + Prompt)
-        print("\n[7/7] SelfCheckGPT ...")
-        for variant in ["nli", "prompt"]:
+        for ev_present, label in conditions:
+            print(f"\n  [{label} condition]")
+
+            # SemanticUncertainty
+            print(f"\n[5/7] SemanticUncertainty ({label}) ...")
             try:
-                sc_df = evaluate_selfcheck(
+                su_df = evaluate_semantic_uncertainty(
                     args.model, args.test_years, args.test_month,
-                    args.data_root, variant=variant,
-                    num_samples=args.num_samples,
+                    args.data_root, num_samples=args.num_samples,
+                    evidence_present=ev_present,
                 )
-                path = predictions_dir / f"selfcheck_{variant}.parquet"
-                sc_df.to_parquet(path, index=False)
-                print(f"  Saved {path} ({len(sc_df)} rows)")
+                path = predictions_dir / "semantic_uncertainty.parquet"
+                if path.exists() and ev_present == 1:
+                    existing = pd.read_parquet(path)
+                    su_df = pd.concat([existing, su_df], ignore_index=True)
+                su_df.to_parquet(path, index=False)
+                print(f"  Saved {path} ({len(su_df)} rows)")
             except Exception as e:
-                print(f"  selfcheck_{variant} SKIPPED - error: {e}")
+                print(f"  SKIPPED - error: {e}")
+
+            # SemanticEnergy
+            print(f"\n[6/7] SemanticEnergy ({label}) ...")
+            try:
+                se_df = evaluate_semantic_energy(
+                    args.model, args.test_years, args.test_month,
+                    args.data_root, num_samples=args.num_samples,
+                    evidence_present=ev_present,
+                )
+                path = predictions_dir / "semantic_energy.parquet"
+                if path.exists() and ev_present == 1:
+                    existing = pd.read_parquet(path)
+                    se_df = pd.concat([existing, se_df], ignore_index=True)
+                se_df.to_parquet(path, index=False)
+                print(f"  Saved {path} ({len(se_df)} rows)")
+            except Exception as e:
+                print(f"  SKIPPED - error: {e}")
+
+            # SelfCheckGPT (NLI + Prompt)
+            print(f"\n[7/7] SelfCheckGPT ({label}) ...")
+            for variant in ["nli", "prompt"]:
+                try:
+                    sc_df = evaluate_selfcheck(
+                        args.model, args.test_years, args.test_month,
+                        args.data_root, variant=variant,
+                        num_samples=args.num_samples,
+                        evidence_present=ev_present,
+                    )
+                    path = predictions_dir / f"selfcheck_{variant}.parquet"
+                    if path.exists() and ev_present == 1:
+                        existing = pd.read_parquet(path)
+                        sc_df = pd.concat([existing, sc_df], ignore_index=True)
+                    sc_df.to_parquet(path, index=False)
+                    print(f"  Saved {path} ({len(sc_df)} rows)")
+                except Exception as e:
+                    print(f"  selfcheck_{variant} SKIPPED - error: {e}")
 
     # -----------------------------------------------------------------------
     # Ground Truth

@@ -239,6 +239,10 @@ if __name__ == "__main__":
         default=2,
         help="Batch size for generation (default: 2).",
     )
+    parser.add_argument(
+        "--with-evidence", action="store_true", default=False,
+        help="Sample with evidence (saves to sampled_generation_evidence/ instead of sampled_generation/)",
+    )
     args = parser.parse_args()
 
     print(f"Device set to: {DEVICE}")
@@ -290,7 +294,7 @@ if __name__ == "__main__":
     dataset = Dataset.from_pandas(df)
     tokenized = dataset.map(
         lambda examples: tokenize_realtimeqa(
-            tokenizer, examples, with_evidence=False
+            tokenizer, examples, with_evidence=args.with_evidence
         ),
         batched=True,
         remove_columns=[col for col in dataset.column_names
@@ -299,7 +303,8 @@ if __name__ == "__main__":
     tokenized.set_format(type="torch")
 
     # Output directory for sampled responses
-    sample_dir = out_dir / model_slug / "sampled_generation"
+    sample_subdir = "sampled_generation_evidence" if args.with_evidence else "sampled_generation"
+    sample_dir = out_dir / model_slug / sample_subdir
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     run_batch_sampling(
