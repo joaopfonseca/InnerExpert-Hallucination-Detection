@@ -174,24 +174,54 @@ def evaluate_llm_check(
     outputs: Dict,
     comp_qids: np.ndarray,
     label_lookup: Dict[str, int],
+    thresholds: Optional[Dict] = None,
 ) -> pd.DataFrame:
     """Evaluate all four LLM-Check score types using pre-computed batch metrics.
 
     Returns a single DataFrame with columns:
         question_id, token_position, attention_score, hidden_score,
         perplexity_score, entropy_score
+
+    When ``thresholds`` is provided (loaded from ``thresholds.json`` produced
+    by ``3.1-fit-baselines.py``), the attention and hidden scores are computed
+    on the **single best layer** selected during threshold fitting, matching the
+    LLM-Check paper's per-layer evaluation approach.  When ``thresholds`` is
+    ``None``, scores are averaged across all layers (legacy behaviour).
     """
     B = len(comp_qids)
 
     if "attention_scores" not in outputs:
         raise KeyError("'attention_scores' not found in outputs.")
     attn_s = outputs["attention_scores"]
-    attn_mean = attn_s.mean(dim=1).mean(dim=1).numpy()
 
     if "hidden_scores" not in outputs:
         raise KeyError("'hidden_scores' not found in outputs.")
     hidden_s = outputs["hidden_scores"]
-    hidden_mean = hidden_s.mean(dim=-1).numpy()
+
+    # Resolve best layers from thresholds (fit by 3.1-fit-baselines.py).
+    best_layer_attn = None
+    best_layer_hidden = None
+    if thresholds is not None:
+        attn_cfg = thresholds.get("llm_check_attention_mean", {})
+        if isinstance(attn_cfg, dict):
+            best_layer_attn = attn_cfg.get("layer")
+        hidden_cfg = thresholds.get("llm_check_hidden_mean", {})
+        if isinstance(hidden_cfg, dict):
+            best_layer_hidden = hidden_cfg.get("layer")
+
+    if best_layer_attn is not None:
+        # Single best layer, sum over heads — matches 3.1's convention.
+        attn_mean = attn_s[:, best_layer_attn].sum(dim=1).numpy()
+    else:
+        # Legacy: mean over layers, mean over heads.
+        attn_mean = attn_s.mean(dim=1).mean(dim=1).numpy()
+
+    if best_layer_hidden is not None:
+        # Single best layer — matches 3.1's convention.
+        hidden_mean = hidden_s[:, :, best_layer_hidden].numpy()
+    else:
+        # Legacy: mean over all layers.
+        hidden_mean = hidden_s.mean(dim=-1).numpy()
 
     sequences = outputs["sequences"]
     input_ids = outputs["input_ids"]

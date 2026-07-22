@@ -38,6 +38,7 @@ Usage:
 """
 
 import argparse
+import json
 import pickle
 import sys
 from pathlib import Path
@@ -180,7 +181,15 @@ def main():
     # LLM-Check
     # -----------------------------------------------------------------------
     print("\n[2/7] LLM-Check ...")
-    llm_df = evaluate_llm_check(outputs, comp_qids, label_lookup)
+    thresholds_path = args.models_dir / model_slug / "thresholds.json"
+    llm_thresholds = None
+    if thresholds_path.exists():
+        with open(thresholds_path, "r") as f:
+            llm_thresholds = json.load(f)
+        print(f"  Loaded thresholds from {thresholds_path}")
+    else:
+        print(f"  WARNING: {thresholds_path} not found — LLM-Check will use all-layer average (legacy).")
+    llm_df = evaluate_llm_check(outputs, comp_qids, label_lookup, thresholds=llm_thresholds)
     path = predictions_dir / "llm_check.parquet"
     llm_df.to_parquet(path, index=False)
     print(f"  Saved {path} ({len(llm_df)} rows)")
