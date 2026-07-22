@@ -49,6 +49,7 @@ from moeuncert.evaluation import (
     build_label_lookup,
     evaluate_detector,
     evaluate_halunet,
+    evaluate_individual_signal,
     evaluate_llm_check,
     evaluate_predictive_entropy,
     evaluate_selfcheck,
@@ -212,21 +213,45 @@ def main():
 
     # --- LLM-Check --------------------------------------------------------
     print("\n[2/7] LLM-Check ...")
+    thresholds_path = args.models_dir / model_slug / "thresholds.json"
+    llm_thresholds = None
+    if thresholds_path.exists():
+        with open(thresholds_path, "r") as f:
+            llm_thresholds = json.load(f)
+        print(f"  Loaded thresholds from {thresholds_path}")
+    else:
+        print(f"  WARNING: {thresholds_path} not found — LLM-Check will use all-layer average (legacy).")
     try:
-        thresholds_path = args.models_dir / model_slug / "thresholds.json"
-        llm_thresholds = None
-        if thresholds_path.exists():
-            with open(thresholds_path, "r") as f:
-                llm_thresholds = json.load(f)
-            print(f"  Loaded thresholds from {thresholds_path}")
-        else:
-            print(f"  WARNING: {thresholds_path} not found — LLM-Check will use all-layer average (legacy).")
         llm_df = evaluate_llm_check(outputs, comp_qids, label_lookup, thresholds=llm_thresholds)
         path = predictions_dir / "llm_check.parquet"
         llm_df.to_parquet(path, index=False)
         print(f"  Saved {path} ({len(llm_df)} rows)")
     except KeyError as e:
         print(f"  SKIPPED — {e}")
+
+    # --- Individual MoE Signals ------------------------------------------
+    print("\n[2b/7] Individual MoE Signals ...")
+    INDIVIDUAL_SIGNALS = [
+        "router_entropy",
+        "expert_hidden_scores",
+        "expert_similarities",
+        "expert_usage_entropy",
+        "expert_usage_gini",
+        "expert_usage_effective_experts",
+    ]
+    for signal_name in INDIVIDUAL_SIGNALS:
+        if signal_name not in outputs:
+            print(f"  SKIPPED — {signal_name} not in outputs")
+            continue
+        try:
+            sig_df = evaluate_individual_signal(
+                outputs, comp_qids, signal_name, thresholds=llm_thresholds
+            )
+            path = predictions_dir / f"signal_{signal_name}.parquet"
+            sig_df.to_parquet(path, index=False)
+            print(f"  Saved {path} ({len(sig_df)} rows)")
+        except Exception as e:
+            print(f"  SKIPPED {signal_name} — {e}")
 
     # --- MoE Detector ----------------------------------------------------
     print("\n[3/7] MoE Detector ...")

@@ -273,6 +273,54 @@ def evaluate_llm_check(
     return pd.DataFrame(rows)
 
 
+def evaluate_individual_signal(
+    outputs: Dict,
+    comp_qids: np.ndarray,
+    signal_name: str,
+    thresholds: Optional[Dict] = None,
+) -> pd.DataFrame:
+    """Evaluate a single individual MoE signal as a standalone detector.
+
+    Mirrors evaluate_llm_check's best-layer approach: when ``thresholds`` is
+    provided, reads the best layer from ``thresholds["individual_signal_{signal_name}_mean"]``
+    and slices to that layer.  Falls back to all-layer mean when ``thresholds``
+    is ``None``.
+
+    Returns a DataFrame with columns:
+        question_id, token_position, score
+    """
+    if signal_name not in outputs:
+        raise KeyError(f"'{signal_name}' not found in outputs.")
+
+    signal = outputs[signal_name]
+    B = len(comp_qids)
+
+    best_layer = None
+    if thresholds is not None:
+        cfg = thresholds.get(f"individual_signal_{signal_name}_mean", {})
+        if isinstance(cfg, dict):
+            best_layer = cfg.get("layer")
+
+    if best_layer is not None:
+        scores = signal[:, :, best_layer].numpy()
+    else:
+        scores = signal.mean(dim=-1).numpy()
+
+    seq_len_out = scores.shape[1]
+
+    rows = []
+    for b in range(B):
+        qid = comp_qids[b]
+        for pos in range(seq_len_out):
+            rows.append({
+                "question_id": qid,
+                "token_position": pos,
+                "score": float(scores[b, pos]),
+            })
+
+    return pd.DataFrame(rows)
+
+
 def evaluate_semantic_uncertainty(
     model: str,
     test_years: Optional[List[int]] = None,

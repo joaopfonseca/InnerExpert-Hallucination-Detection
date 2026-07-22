@@ -66,6 +66,7 @@ from moeuncert.evaluation import (
     build_ground_truth,
     evaluate_detector,
     evaluate_halunet,
+    evaluate_individual_signal,
     evaluate_llm_check,
     evaluate_predictive_entropy,
     evaluate_selfcheck,
@@ -193,6 +194,32 @@ def main():
     path = predictions_dir / "llm_check.parquet"
     llm_df.to_parquet(path, index=False)
     print(f"  Saved {path} ({len(llm_df)} rows)")
+
+    # -----------------------------------------------------------------------
+    # Individual MoE Signals
+    # -----------------------------------------------------------------------
+    print("\n[2b/7] Individual MoE Signals ...")
+    INDIVIDUAL_SIGNALS = [
+        "router_entropy",
+        "expert_hidden_scores",
+        "expert_similarities",
+        "expert_usage_entropy",
+        "expert_usage_gini",
+        "expert_usage_effective_experts",
+    ]
+    for signal_name in INDIVIDUAL_SIGNALS:
+        if signal_name not in outputs:
+            print(f"  SKIPPED — {signal_name} not in outputs")
+            continue
+        try:
+            sig_df = evaluate_individual_signal(
+                outputs, comp_qids, signal_name, thresholds=llm_thresholds
+            )
+            path = predictions_dir / f"signal_{signal_name}.parquet"
+            sig_df.to_parquet(path, index=False)
+            print(f"  Saved {path} ({len(sig_df)} rows)")
+        except Exception as e:
+            print(f"  SKIPPED {signal_name} — {e}")
 
     # -----------------------------------------------------------------------
     # Our Detector (every candidate family from 3.0)

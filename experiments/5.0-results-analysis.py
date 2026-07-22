@@ -318,6 +318,33 @@ def analyse(
                 _eval_token_level(llm_df, gt_token, score_type),
             )
 
+    # Individual MoE Signals (per-token → answer-level mean/max)
+    INDIVIDUAL_SIGNALS = [
+        "router_entropy",
+        "expert_hidden_scores",
+        "expert_similarities",
+        "expert_usage_entropy",
+        "expert_usage_gini",
+        "expert_usage_effective_experts",
+    ]
+    for signal_name in INDIVIDUAL_SIGNALS:
+        sig_df = _load_prediction_df(
+            predictions_dir, f"signal_{signal_name}.parquet",
+            ["question_id", "token_position", "score"],
+        )
+        if sig_df is None:
+            continue
+        for agg in ("mean", "max"):
+            agg_df = _aggregate_token_to_answer(sig_df, "score", agg)
+            name = f"Signal-{signal_name}-{agg}"
+            key = f"individual_signal_{signal_name}_{agg}"
+            answer_results[name] = (
+                "answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=_thr(key))
+            )
+        token_results[f"Signal-{signal_name}"] = (
+            "token", _eval_token_level(sig_df, gt_token, "score")
+        )
+
     # MoE Detector — every candidate family (per-token → answer-level mean/max)
     for det_path in sorted(predictions_dir.glob("detector_*.parquet")):
         det_df = _load_prediction_df(
@@ -439,6 +466,8 @@ def analyse(
             pred_fn = "predictive_entropy.parquet"
         elif method.startswith("LLM-Check-"):
             pred_fn = "llm_check.parquet"
+        elif method.startswith("Signal-"):
+            pred_fn = f"signal_{method[len('Signal-'):].rsplit('-', 1)[0]}.parquet"
         elif method.startswith("Ours-"):
             pred_fn = _ours_method_to_pred_fn(method)
 
@@ -460,7 +489,7 @@ def analyse(
         }.get(method, "score")
 
         # Handle aggregation for token-level methods
-        if method.startswith(("PredictiveEntropy-", "Ours-", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-")):
+        if method.startswith(("PredictiveEntropy-", "Ours-", "LLM-Check-attention-", "LLM-Check-hidden-", "LLM-Check-entropy-", "Signal-")):
             # Need to extract aggregation
             if method.endswith("(max)") or "-max" in method:
                 agg = "max"
