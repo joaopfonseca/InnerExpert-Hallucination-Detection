@@ -6,6 +6,7 @@
 #   • MoE hallucination detector (3.0)
 #   • Baseline thresholds (3.1)
 #   • HaluNet (3.2)
+#   • Individual MoE signal thresholds (3.3)
 #
 # Usage:
 #   chmod +x train_pipeline.sh
@@ -111,6 +112,12 @@ else
         --temperature "${SAMPLING_TEMPERATURE}"
 fi
 
+run_script "3.3-fit-individual-signals.py" \
+    --train-years "${TRAIN_YEARS[@]}" \
+    $( [[ -n "${TRAIN_MONTH}" ]] && echo "--month ${TRAIN_MONTH}" ) \
+    --model "${MODEL}" \
+    --label-model "${LABEL_MODEL}"
+
 if [[ -f "${MODEL_DIR}/halunet.pt" ]]; then
     log "SKIP: ${MODEL_DIR}/halunet.pt already exists — skipping 3.2-train-halunet.py"
 else
@@ -125,5 +132,5 @@ log ""
 log "=== TRAIN PIPELINE COMPLETE ==="
 log "Models saved in: ${MODEL_DIR}/"
 log "  • detector.pkl"
-log "  • thresholds.json"
+log "  • thresholds.json (includes individual signal thresholds)"
 log "  • halunet.pt"
