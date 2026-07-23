@@ -124,6 +124,20 @@ def main():
     df_expanded = expand_base_rag_rows(df, has_evidence=adapter.has_evidence)
     print(f"  After base/evidence expansion: {len(df_expanded)} rows")
 
+    # --- Fill empty evidence with reference answer -------------------------
+    # For datasets without a context passage (TruthfulQA, NQ-Open, FreshQA),
+    # the evidence column is empty.  The LLM judge needs a reference to
+    # compare the generated answer against, so we use the ground-truth
+    # answer_str as the evidence field.
+    if not adapter.has_evidence:
+        df_expanded["evidence"] = df_expanded["answer_str"]
+        print(f"  Filled evidence with answer_str (non-evidence dataset)")
+    else:
+        empty_mask = df_expanded["evidence"].astype(str).str.len() == 0
+        if empty_mask.any():
+            df_expanded.loc[empty_mask, "evidence"] = df_expanded.loc[empty_mask, "answer_str"]
+            print(f"  Filled {empty_mask.sum()} empty evidence rows with answer_str")
+
     # --- LLM-as-judge labeling --------------------------------------------
     label_model_slug = args.label_model.replace("/", "__")
     output_file = model_dir / f"results_labeled_{label_model_slug}.parquet"

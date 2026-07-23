@@ -405,6 +405,13 @@ if __name__ == "__main__":
     # Break answers with and without evidence:
     df = expand_base_rag_rows(df)
 
+    # Fill empty evidence with reference answer so the LLM judge has a
+    # ground-truth reference to compare the generated answer against.
+    empty_mask = df["evidence"].astype(str).str.len() == 0
+    if empty_mask.any():
+        df.loc[empty_mask, "evidence"] = df.loc[empty_mask, "answer_str"]
+        print(f"  Filled {empty_mask.sum()} empty evidence rows with answer_str")
+
     # Generate answer-level labels
     metric_cols = df.columns[df.columns.str.startswith(METRIC_PREFIXES)].tolist()
     thresholds = compute_metric_thresholds(df, metric_cols)
