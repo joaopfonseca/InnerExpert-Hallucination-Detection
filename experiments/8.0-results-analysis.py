@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import pandas as pd
 from mlresearch.latex import export_table, format_table, make_bold
@@ -109,7 +110,7 @@ METRICS_INV = {v: k for k, v in METRICS.items()}
 # ---------------------------------------------------------------------------
 # Style
 # ---------------------------------------------------------------------------
-set_matplotlib_style(font_size=8, use_latex=True)
+set_matplotlib_style(font_size=8, use_latex=True, **{"font.family":"serif"})
 
 
 # ---------------------------------------------------------------------------
@@ -351,10 +352,10 @@ SIGNAL_METHOD_NAMES_ANSWER = {
     # Baselines
     "PredictiveEntropy-mean": ("Logit Entropy", "mean"),
     "PredictiveEntropy-max": ("Logit Entropy", "max"),
-    "LLM-Check-attention-mean": ("LLM-Check Att.", "mean"),
-    "LLM-Check-attention-max": ("LLM-Check Att.", "max"),
-    "LLM-Check-hidden-mean": ("LLM-Check Hid.", "mean"),
-    "LLM-Check-hidden-max": ("LLM-Check Hid.", "max"),
+    "LLM-Check-attention-mean": ("LLM-Check (att.)", "mean"),
+    "LLM-Check-attention-max": ("LLM-Check (att.)", "max"),
+    "LLM-Check-hidden-mean": ("LLM-Check (hid.)", "mean"),
+    "LLM-Check-hidden-max": ("LLM-Check (hid.)", "max"),
     "LLM-Check-entropy-mean": ("LLM-Check Entropy", "mean"),
     "LLM-Check-entropy-max": ("LLM-Check Entropy", "max"),
     "LLM-Check-perplexity": ("Perplexity", "none"),
@@ -797,6 +798,7 @@ if __name__ == "__main__":
     generate_dataset_statistics_table()
 
 
+    signal_contribution_tables = {}
     for metric in ["AUROC", "F1"]:
         df_answers_table = results_table(df_answers, metric=metric)
 
@@ -825,12 +827,10 @@ if __name__ == "__main__":
 
         # Signal contribution analysis
         print("\nGenerating signal contribution table...")
-        generate_signal_contribution_table(metric=metric)
+        df_signals = generate_signal_contribution_table(metric=metric)
+        signal_contribution_tables[metric] = df_signals
 
-    # Plot roc curves
-
-    # Discriminatory power plots for each signal method
-
+    # TODO: Discriminatory power plots for each signal method
 
     # Analysis of LLM-as-a-judge approach with human annotated sample
     print("\nGenerating judge validation tables...")
@@ -838,4 +838,54 @@ if __name__ == "__main__":
 
     # Inference time & memory benchmark table
     print("\nGenerating inference benchmark table...")
-    generate_inference_benchmark_table()
+    df_time_all = generate_inference_benchmark_table()
+
+    # Scatter plot of inference time vs. AUROC for each method
+    df_auroc = signal_contribution_tables["AUROC"]
+    df_auroc = df_auroc.iloc[:, df_auroc.columns.str.endswith("Answer")]
+    df_auroc.columns = df_auroc.columns.str.replace(" Answer", " AUROC")
+    df_time = df_time_all.iloc[
+        :, 
+        df_time_all.columns.get_level_values(1).str.startswith("Time")
+    ]
+    df_time.columns = df_time.columns.droplevel(1)
+    df_time.columns = df_time.columns + " Time"
+    df = df_auroc.join(df_time, how="outer")
+
+    # Drop vanilla generation, LLM-Check (entropy), and non XGB IE variants
+    df.dropna(inplace=True)
+    moe_methods = (
+        df.index.str.startswith("InnerExpert")
+        | df.index.str.startswith("Expert")
+        | (df.index == "Inv. Herfindahl")
+        | (df.index == "Router Entropy")
+        | df.index.str.startswith("Usage")
+    )
+    df["Markers"] = "Others"
+    df.loc[moe_methods, "Markers"] = "MoE-Specific"
+
+    for i, host_model in enumerate(MODELS.values()):
+        fig, ax = plt.subplots(figsize=(4, 3))
+        sns.scatterplot(
+            data=df,
+            x=f"{host_model} Time",
+            y=f"{host_model} AUROC",
+            style=df.Markers,
+            hue=df.index,
+            palette="tab20",
+            s=70,
+            ax=ax
+        )
+        ax.set_xlabel(f"Time (s) \n ({'ab'[i]})")
+        ax.set_ylabel("AUROC")
+
+        # Draw pareto frontier line
+
+        if i == 0:
+            ax.get_legend().remove()
+        else:
+            plt.legend(bbox_to_anchor=(1, 0.5), loc='center left', fontsize=7)
+        plt.savefig(
+            OUTPUT_DIR / f"inference_time_vs_auroc_scatter_{host_model}.pdf", 
+            bbox_inches="tight"
+        )
