@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,32 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # ---------------------------------------------------------------------------
 # Generation (reuses 1.0's run_batch_generation logic)
 # ---------------------------------------------------------------------------
+
+
+def _safe_torch_save(obj, path, max_retries=3):
+    """torch.save with retry on transient NFS/iostream failures.
+
+    The NAS-mounted home directory on proteina04 intermittently fails
+    mid-write with ``RuntimeError: basic_ios::clear: iostream error``,
+    leaving truncated .pt files.  This wrapper retries the save (after
+    removing the partial file) so a single hiccup doesn't crash a
+    multi-hour run.
+    """
+    for attempt in range(max_retries):
+        try:
+            torch.save(obj, path)
+            return
+        except RuntimeError as e:
+            if "iostream" in str(e) and attempt < max_retries - 1:
+                print(
+                    f"  WARNING: torch.save failed (attempt {attempt + 1}/{max_retries}): {e}"
+                    f" — retrying in 2s..."
+                )
+                if path.exists():
+                    path.unlink()
+                time.sleep(2)
+                continue
+            raise
 
 
 def run_batch_generation(
@@ -121,7 +148,7 @@ def run_batch_generation(
             del outputs_processed
 
             if save_path is not None:
-                torch.save(all_outputs, save_path / filename)
+                _safe_torch_save(all_outputs, save_path / filename)
                 del all_outputs
                 all_outputs = {}
 
@@ -222,7 +249,7 @@ def run_batch_sampling(
                     f"__batch_size_{batch_size}"
                     f"__num_samples_{num_samples}.pt"
                 )
-                torch.save(all_outputs, save_path / filename)
+                _safe_torch_save(all_outputs, save_path / filename)
                 del all_outputs
                 all_outputs = {}
 
@@ -399,22 +426,19 @@ def main():
 
     # --- Generation passes ------------------------------------------------
     # XSum: evidence-only (summarization framing — document IS the input).
-    # Datasets with has_evidence=True: base + evidence passes.
-    # Datasets with has_evidence=False: base-only.
+    # All datasets: base + evidence passes.  For datasets without native
+    # context (has_evidence=False), the ground-truth answer_str is used
+    # as the evidence text (see build_user_prompt).
     #
     # --only-sampled-evidence: skip everything except evidence sampled
     # generation (used to add evidence sampling to an existing run).
     only_ev_sampling = args.only_sampled_evidence
     run_base = not only_ev_sampling
-    run_evidence = adapter.has_evidence and not only_ev_sampling
+    run_evidence = not only_ev_sampling
 
     if adapter.task_type == "summarization":
         run_base = False
         run_evidence = True
-
-    if only_ev_sampling and not adapter.has_evidence:
-        print("\n--only-sampled-evidence requires a dataset with evidence. Exiting.")
-        return
 
     if run_base:
         print("\n[3/5] Base generation (no evidence)...")
@@ -471,7 +495,7 @@ def main():
             print("\n[4b/5] Skipping sampled generation (num-samples=0)")
 
     # --- Evidence sampled generation (optional) ---------------------------
-    if args.num_samples > 0 and adapter.has_evidence:
+    if args.num_samples > 0:
         print(f"\n[4c/5] Evidence sampled generation ({args.num_samples} samples)...")
         tokenized_se = tokenize_with_adapter(tokenizer, df, adapter, with_evidence=True)
         sampled_ev_dir = model_dir / "sampled_generation_evidence"

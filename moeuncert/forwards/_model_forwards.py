@@ -38,11 +38,12 @@ def forward_olmoe(self, hidden_states):
     routing_weights = routing_weights.to(hidden_states.dtype)
 
     experts_hidden = {
-        "expert_idx": selected_experts.detach().cpu(),
-        "expert_weights": routing_weights.detach().cpu(),
+        "expert_idx": selected_experts.detach(),
+        "expert_weights": routing_weights.detach(),
         "expert_hidden_states": torch.zeros(
-            *routing_weights.shape, hidden_dim, dtype=hidden_states.dtype
-        ).detach().cpu(),
+            *routing_weights.shape, hidden_dim, dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        ).detach(),
     }
 
     final_hidden_states = torch.zeros_like(hidden_states)
@@ -69,7 +70,7 @@ def forward_olmoe(self, hidden_states):
 
         experts_hidden["expert_hidden_states"][
             token_idx, top_k_pos
-        ] = current_hidden_states.detach().cpu()
+        ] = current_hidden_states.detach()
 
         current_hidden_states = (
             current_hidden_states * routing_weights[token_idx, top_k_pos, None]
@@ -146,11 +147,12 @@ def forward_gemma4(self, hidden_states, top_k_index, top_k_weights):
             flat_hidden = hidden_states
 
     experts_hidden = {
-        "expert_idx": top_k_index.detach().cpu(),
-        "expert_weights": top_k_weights.detach().cpu(),
+        "expert_idx": top_k_index.detach(),
+        "expert_weights": top_k_weights.detach(),
         "expert_hidden_states": torch.zeros(
-            num_tokens, top_k, hidden_dim, dtype=flat_hidden.dtype
-        ).detach().cpu(),
+            num_tokens, top_k, hidden_dim, dtype=flat_hidden.dtype,
+            device=flat_hidden.device,
+        ).detach(),
     }
 
     final_hidden_states = torch.zeros_like(flat_hidden)
@@ -178,7 +180,7 @@ def forward_gemma4(self, hidden_states, top_k_index, top_k_weights):
         # Save pre-routing intermediate state for downstream metrics.
         experts_hidden["expert_hidden_states"][
             token_idx, top_k_pos
-        ] = current_hidden_states.detach().cpu()
+        ] = current_hidden_states.detach()
 
         current_hidden_states = (
             current_hidden_states * top_k_weights[token_idx, top_k_pos, None]

@@ -141,14 +141,20 @@ class OOSDatasetAdapter:
 
         For QA datasets: ``"Evidence: {ev}\n\nQuestion: {q}"`` or just ``{q}``.
         For summarization: ``"Summarize the following document:\n\n{document}"``.
+
+        When ``with_evidence=True`` but the dataset has no native context
+        (``has_evidence=False``), the ground-truth ``answer_str`` is used
+        as the evidence text so the model sees the reference answer.
         """
         if self.task_type == "summarization":
             doc = row.get("evidence", "") or row.get("question_sentence", "")
             return f"Summarize the following document:\n\n{doc}"
 
         q = row["question_sentence"]
-        if with_evidence and self.has_evidence:
+        if with_evidence:
             ev = row.get("evidence", "")
+            if not ev and not self.has_evidence:
+                ev = row.get("answer_str", "")
             if ev:
                 return f"Evidence: {ev}\n\nQuestion: {q}"
         return q

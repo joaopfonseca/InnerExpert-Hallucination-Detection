@@ -254,11 +254,25 @@ def standardize_outputs(outputs, device=None):
         #         expert_weights (batch_size, num_experts)
         #         expert_hidden_states (batch_size, num_experts, hidden_size)
 
+        # When device_map="auto" shards a model across multiple GPUs, each
+        # MoE layer's last_experts_hidden tensor lives on its layer's GPU.
+        # torch.stack/concat require all tensors on the same device, so we
+        # pick a reference device (first layer's) and move all layers there
+        # before stacking.  This avoids the per-token .cpu() sync barrier
+        # that the patched forwards used to incur, while staying safe for
+        # multi-GPU sharded inference.
+        _ref_dev = outputs["experts_hidden"][0][0][
+            next(iter(outputs["experts_hidden"][0][0]))
+        ].device
+
         for key in outputs["experts_hidden"][0][0].keys():
             # (n_layers, batch_size, token_len, num_experts[, hidden_size])
             experts_output = torch.concat(
                 [
-                    torch.stack([layer_info[key] for layer_info in gen_token_state])
+                    torch.stack([
+                        layer_info[key].to(_ref_dev)
+                        for layer_info in gen_token_state
+                    ])
                     for gen_token_state in outputs["experts_hidden"]
                 ],
                 dim=2,

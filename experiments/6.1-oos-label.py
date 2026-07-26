@@ -119,9 +119,10 @@ def main():
 
     # --- Expand base + evidence rows --------------------------------------
     # expand_base_rag_rows splits _rag columns into separate rows with
-    # evidence_present flag.  For datasets without evidence (base-only),
-    # this just passes through (no _rag columns → no expansion).
-    df_expanded = expand_base_rag_rows(df, has_evidence=adapter.has_evidence)
+    # evidence_present flag.  All OOS datasets now have evidence-conditioned
+    # generations (using answer_str as evidence for datasets without native
+    # context), so always expand.
+    df_expanded = expand_base_rag_rows(df, has_evidence=True)
     print(f"  After base/evidence expansion: {len(df_expanded)} rows")
 
     # --- Fill empty evidence with reference answer -------------------------

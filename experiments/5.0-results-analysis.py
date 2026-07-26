@@ -281,7 +281,7 @@ def analyse(
         # Token-level
         token_results["PredictiveEntropy"] = (
             "token",
-            _eval_token_level(pe_df, gt_token, "score"),
+            _eval_token_level(pe_df, gt_token, "score", threshold=_thr("predictive_entropy_mean")),
         )
 
     # LLM-Check (multiple score types)
@@ -313,9 +313,10 @@ def analyse(
 
         # Token-level for attention, hidden, entropy
         for score_type in ("attention_score", "hidden_score", "entropy_score"):
+            key = f"llm_check_{score_type.replace('_score', '')}_mean"
             token_results[f"LLM-Check-{score_type.replace('_score', '')}"] = (
                 "token",
-                _eval_token_level(llm_df, gt_token, score_type),
+                _eval_token_level(llm_df, gt_token, score_type, threshold=_thr(key)),
             )
 
     # Individual MoE Signals (per-token → answer-level mean/max)
@@ -342,7 +343,7 @@ def analyse(
                 "answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=_thr(key))
             )
         token_results[f"Signal-{signal_name}"] = (
-            "token", _eval_token_level(sig_df, gt_token, "score")
+            "token", _eval_token_level(sig_df, gt_token, "score", threshold=_thr(f"individual_signal_{signal_name}_mean"))
         )
 
     # MoE Detector — every candidate family (per-token → answer-level mean/max)
@@ -364,7 +365,7 @@ def analyse(
             "answer", _eval_answer_level(agg_df, gt_answer, "score", threshold=thr)
         )
         token_results[f"Ours-{family}"] = (
-            "token", _eval_token_level(det_df, gt_token, "score")
+            "token", _eval_token_level(det_df, gt_token, "score", threshold=thr)
         )
 
     # ------------------------------------------------------------------
