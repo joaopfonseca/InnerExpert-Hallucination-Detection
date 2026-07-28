@@ -110,7 +110,7 @@ METRICS_INV = {v: k for k, v in METRICS.items()}
 # ---------------------------------------------------------------------------
 # Style
 # ---------------------------------------------------------------------------
-set_matplotlib_style(font_size=8, use_latex=True, **{"font.family":"serif"})
+set_matplotlib_style(font_size=30, use_latex=True, **{"font.family":"times"})
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +367,8 @@ SIGNAL_METHOD_NAMES_ANSWER = {
     # Detector (for reference)
     "Ours-XGBoost (max)": ("InnerExpert (XGBoost)", "max"),
     "Ours-XGBoost (mean)": ("InnerExpert (XGBoost)", "mean"),
+    "Ours-MLP (max)": ("InnerExpert (MLP)", "max"),
+    "Ours-MLP (mean)": ("InnerExpert (MLP)", "mean"),
 }
 
 # Token-level: raw method -> display_name (no aggregation)
@@ -378,10 +380,11 @@ SIGNAL_METHOD_NAMES_TOKEN = {
     "Signal-expert_usage_gini": "Usage Gini",
     "Signal-expert_usage_effective_experts": "Inv. Herfindahl",
     "PredictiveEntropy": "Logit Entropy",
-    "LLM-Check-attention": "LLM-Check Att.",
-    "LLM-Check-hidden": "LLM-Check Hid.",
+    "LLM-Check-attention": "LLM-Check (att.)",
+    "LLM-Check-hidden": "LLM-Check (hid.)",
     "LLM-Check-entropy": "LLM-Check Entropy",
     "Ours-XGBoost": "InnerExpert (XGBoost)",
+    "Ours-MLP": "InnerExpert (MLP)",
 }
 
 
@@ -862,10 +865,10 @@ if __name__ == "__main__":
         | df.index.str.startswith("Usage")
     )
     df["Markers"] = "Others"
-    df.loc[moe_methods, "Markers"] = "MoE-Specific"
+    df.loc[moe_methods, "Markers"] = "MoE-Specific (Ours)"
 
-    for i, host_model in enumerate(MODELS.values()):
-        fig, ax = plt.subplots(figsize=(4, 3))
+    fig, axes = plt.subplots(1, 2, figsize=(10*1.8, 3*1.8))
+    for i, (host_model, ax) in enumerate(zip(MODELS.values(), axes)):
         sns.scatterplot(
             data=df,
             x=f"{host_model} Time",
@@ -873,19 +876,46 @@ if __name__ == "__main__":
             style=df.Markers,
             hue=df.index,
             palette="tab20",
-            s=70,
+            s=350,
             ax=ax
         )
-        ax.set_xlabel(f"Time (s) \n ({'ab'[i]})")
-        ax.set_ylabel("AUROC")
+        ax.set_xlabel(f"Time (s) \n{host_model}", fontsize=30)
 
-        # Draw pareto frontier line
+        # Draw pareto frontier line (non-dominated methods: faster AND higher)
+        col_x = f"{host_model} Time"
+        col_y = f"{host_model} AUROC"
+        pts = df[[col_x, col_y]].dropna().sort_values(
+            [col_x, col_y], ascending=[True, False]
+        )
+        pareto_x, pareto_y = [], []
+        running_max = -np.inf
+        prev_x = None
+        for _, row in pts.iterrows():
+            x, y = row[col_x], row[col_y]
+            if x == prev_x:
+                continue
+            prev_x = x
+            if y > running_max:
+                pareto_x.append(x)
+                pareto_y.append(y)
+                running_max = y
+
+        if len(pareto_x) > 1:
+            ax.plot(
+                pareto_x, pareto_y,
+                color="grey", linestyle="--", alpha=0.6,
+                linewidth=1, zorder=0,
+            )
 
         if i == 0:
             ax.get_legend().remove()
+            ax.set_ylabel("AUROC", fontsize=30)
         else:
-            plt.legend(bbox_to_anchor=(1, 0.5), loc='center left', fontsize=7)
-        plt.savefig(
-            OUTPUT_DIR / f"inference_time_vs_auroc_scatter_{host_model}.pdf", 
-            bbox_inches="tight"
-        )
+            plt.legend(bbox_to_anchor=(0, 1), loc='lower center', fontsize=30, ncol=5)
+            ax.set_ylabel("")
+
+    plt.subplots_adjust(wspace=0.4)  # , hspace=0.4)
+    plt.savefig(
+        OUTPUT_DIR / "inference_time_vs_auroc_scatter.pdf", 
+        bbox_inches="tight"
+    )
