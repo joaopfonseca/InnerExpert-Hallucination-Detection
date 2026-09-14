@@ -35,7 +35,6 @@ models/               # Trained artefacts (detector.pkl, thresholds.json, halune
 data/                 # Generated answers, labels, predictions, analysis  [gitignored]
 figures/              # Paper figures  [gitignored]
 tables/               # Paper LaTeX tables  [gitignored]
-presentation/         # reveal.js talk
 pretrained_models/    # HF cache (kept inside the repo)  [gitignored]
 Makefile              # Convenience targets (make help)
 requirements.txt
@@ -87,7 +86,6 @@ Loaders live in `moeuncert.datasets`; prompt adapters in `moeuncert.datasets_ada
 ## Documentation
 
 - [`experiments/README.md`](experiments/README.md) — per-script reference and data layout
-- [`presentation/README.md`](presentation/README.md) — reveal.js research talk
 
 ## Citation
 
