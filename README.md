@@ -90,12 +90,12 @@ Loaders live in `moeuncert.datasets`; prompt adapters in `moeuncert.datasets_ada
 ## Citation
 
 ```bibtex
-@misc{moe_uncertainty_estimation,
-  title  = {Hallucination Detection in Mixture-of-Experts LLMs via Routing-Time Internal Signals},
-  author = {<your name>},
-  year   = {2026},
-  note   = {Preprint in preparation},
-  url    = {<repo url>}
+@article{fonseca2026mixture,
+  author = {Fonseca, Joao and Rodrigues, Rodrigo and Romano, Paolo},
+  title = {Mixture-of-Expert Blocks Contain Strong Hallucination Detection Signals},
+  journal = {arXiv preprint arXiv:2608.17687 (UNDER SUBMISSION)},
+  year = {2026},
+  url = {https://doi.org/10.48550/arXiv.2608.17687},
 }
 ```
 
