@@ -6,7 +6,7 @@ Hallucination detection in Mixture-of-Experts (MoE) LLMs via routing-time intern
 
 Mixture-of-Experts language models expose internal routing signals that dense models do not provide: which experts a token was routed to, how confidently, and how consistently. This project treats those signals as proxies for epistemic uncertainty and uses them to detect hallucinations at both the answer level and the token level — single-pass, post-hoc, with no modification to the model architecture or training.
 
-The repository contains `moeuncert`, a library for intercepting the MoE forward pass and extracting routing/hidden-state/attention signals, alongside numbered experiment scripts that generate answers, label them, train detectors, and evaluate against a suite of baselines. See `docs/proposed-method.md` for the full method write-up and epistemic-uncertainty framing.
+The repository contains `moeuncert`, a library for intercepting the MoE forward pass and extracting routing/hidden-state/attention signals, alongside numbered experiment scripts that generate answers, label them, train detectors, and evaluate against a suite of baselines.
 
 ## Method
 
@@ -15,7 +15,7 @@ At each generation step, `MoEMonitor` intercepts the forward pass to collect:
 - **Standard signals** — hidden state scores, attention scores, top-k output entropy (from LLM-Check)
 - **MoE-specific signals** — router entropy, expert hidden scores, expert similarity, expert usage frequency, Gini impurity of expert usage, inverse Herfindahl index
 
-These are combined either with a training-free threshold detector or a trainable classifier (logistic regression / RandomForest / XGBoost / MLP). See `docs/proposed-method.md` for signal definitions and `docs/baselines.md` for the baseline matrix.
+These are combined either with a training-free threshold detector or a trainable classifier (logistic regression / RandomForest / XGBoost / MLP).
 
 ## Supported models
 
@@ -31,7 +31,6 @@ Both are registered in `moeuncert.forwards.MOE_FORWARD_REGISTRY`. To add a new M
 ```
 moeuncert/            # Library: forwards, metrics, monitoring, baselines, models, datasets
 experiments/          # Numbered pipeline scripts (0.x–8.x) + shell pipelines
-docs/                 # Method, baselines, experiment protocol, related work, TODO
 models/               # Trained artefacts (detector.pkl, thresholds.json, halunet.pt)  [gitignored]
 data/                 # Generated answers, labels, predictions, analysis  [gitignored]
 figures/              # Paper figures  [gitignored]
@@ -83,14 +82,10 @@ Configuration (model, quantization, label model, train/test years, sampling) liv
 - **RealtimeQA** (primary) — temporal split: 2024–2025 for training, 2026 for OOD evaluation.
 - **OOS cross-dataset** — SQuAD, TruthfulQA, NQ-Open, FreshQA.
 
-Loaders live in `moeuncert.datasets`; prompt adapters in `moeuncert.datasets_adapters`. See `docs/experiments.md` for the full protocol (splits, metrics, hyperparameter tuning).
+Loaders live in `moeuncert.datasets`; prompt adapters in `moeuncert.datasets_adapters`.
 
 ## Documentation
 
-- [`docs/proposed-method.md`](docs/proposed-method.md) — method and epistemic-uncertainty framing
-- [`docs/baselines.md`](docs/baselines.md) — baseline matrix and rationale
-- [`docs/experiments.md`](docs/experiments.md) — experiment protocol (splits, metrics, output schema)
-- [`docs/related-work.md`](docs/related-work.md) — related work survey
 - [`experiments/README.md`](experiments/README.md) — per-script reference and data layout
 - [`presentation/README.md`](presentation/README.md) — reveal.js research talk
 
